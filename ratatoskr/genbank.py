@@ -455,7 +455,8 @@ async def validate_accessions(accessions, email, api_key, pbar=None, rate_limite
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
             else:
                 logger.error(f"Failed to retrieve search results after {max_retries} attempts.")
-                raise
+                raise e
+                
         webenv = search_result["WebEnv"]
         query_key = search_result["QueryKey"]
 
@@ -492,7 +493,7 @@ async def validate_accessions(accessions, email, api_key, pbar=None, rate_limite
 async def grouped_validate_accessions(accessions, max_terms, email, api_key, max_concurrency=9, pbar=None):
     semaphore = asyncio.Semaphore(max_concurrency)
     batches = [accessions[i:i + max_terms] for i in range(0, len(accessions), max_terms)]
-    rate_limiter = RateLimiter(max_rate=9)
+    rate_limiter = RateLimiter(max_rate=8)
 
     async def limited_validate(batch, pbar=pbar, rate_limiter=None):
         async with semaphore:

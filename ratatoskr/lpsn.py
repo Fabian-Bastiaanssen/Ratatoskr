@@ -265,7 +265,6 @@ def check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache=None, api_key=None
 def retrieve_LPSN_type_info(input, output_path, threads, level, lpsn_client, dev_mode, no_cache, cache, api_key=None, email=None):
  
     logger.info("Step 1 of 4: Retrieving taxonomical data from LPSN.")
-    logger.info("No cached LPSN hits found, retrieving from LPSN API.")
     taxonomic_level = get_taxaomic_levels(input) if level == "auto" else level
     full_lpsn_df = search_all_lpsn(lpsn_client)
     lpsn_hits = filter_dataframe(full_lpsn_df, input, taxonomic_level)

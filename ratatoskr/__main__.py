@@ -131,7 +131,7 @@ def run(ctx, input, output_path, threads, force, level, dev_mode, skip_download,
     set_up_logger(output_path, force, debug=dev_mode)
     email, api_key = get_genbank_api_info(dev_mode) 
     lpsn_client, bacdive_client = initialise_clients(dev_mode)
-    lpsn_types = retrieve_LPSN_type_info(input, output_path, threads, level, lpsn_client, dev_mode, no_cache, cache)
+    lpsn_types = retrieve_LPSN_type_info(input, output_path, threads, level, lpsn_client, dev_mode, no_cache, cache, api_key=api_key, email=email)
     lpsn_types = retrieve_extra_info_from_bacdive(lpsn_types, bacdive_client)
     lpsn_types = retrieve_info_from_genbank(lpsn_types, output_path, threads, dev_mode, input, skip_download, email=email, api_key=api_key)
     retrieve_sequences_workflow(lpsn_types, output_path, threads, dev_mode, input, skip_download)

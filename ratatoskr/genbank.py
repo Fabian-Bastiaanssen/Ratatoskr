@@ -449,45 +449,48 @@ async def validate_accessions(accessions, email, api_key, pbar=None, rate_limite
             # esearch async call
             search_result_xml = await esearch(term, db="nuccore", retmax=10**4, api_key=api_key, email=email, rate_limiter=rate_limiter)
             search_result = Entrez.read(search_result_xml)
+            webenv = search_result["WebEnv"]
+            query_key = search_result["QueryKey"]
             break
         except Exception as e:
             if attempt < max_retries - 1:
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                logger.warning(f"Attempt {attempt + 1} failed to retrieve search results. Retrying...")
+                logger.debug(f"Error details: {e}")
+                logger.debug(f"Search result XML: {search_result_xml.getvalue().decode() if 'search_result_xml' in locals() else 'No search result XML available'}")
             else:
                 logger.error(f"Failed to retrieve search results after {max_retries} attempts.")
-                raise e
+                exit(1)
                 
-        webenv = search_result["WebEnv"]
-        query_key = search_result["QueryKey"]
 
-        if search_result.get("Count")!=0 :  # equivalent to Count != "0"
-            for attempt in range(max_retries):
-                try:
-                    # esummary async call
-                    records = await esummary(query_key, webenv, db="nuccore", api_key=api_key, email=email, rate_limiter=rate_limiter)
-                    records = Entrez.read(records)
-                    break
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                    else:
-                        logger.error(f"Failed to retrieve esummary results after {max_retries} attempts.")
-                        raise
-            # Filter valid records
-            for x in records:
-                length = x.get("Length")
-                status = x.get("Status")
-                acc_ver = x.get("AccessionVersion")
-                if (
-                    length is not None
-                    and 1000 <= int(length) <= 2500
-                    and status == "live"
-                    and acc_ver
-                    and len(acc_ver) < 12
-                ):
-                    valid_subset.add(acc_ver.split(".")[0])
-            if pbar:
-                pbar.update(len(accessions))
+    if search_result.get("Count")!=0 : 
+        for attempt in range(max_retries):
+            try:
+                # esummary async call
+                records = await esummary(query_key, webenv, db="nuccore", api_key=api_key, email=email, rate_limiter=rate_limiter)
+                records = Entrez.read(records)
+                break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    logger.error(f"Failed to retrieve esummary results after {max_retries} attempts.")
+                    exit(1)
+        # Filter valid records
+        for x in records:
+            length = x.get("Length")
+            status = x.get("Status")
+            acc_ver = x.get("AccessionVersion")
+            if (
+                length is not None
+                and 1000 <= int(length) <= 2500
+                and status == "live"
+                and acc_ver
+                and len(acc_ver) < 12
+            ):
+                valid_subset.add(acc_ver.split(".")[0])
+        if pbar:
+            pbar.update(len(accessions))
     return valid_subset
 
 async def grouped_validate_accessions(accessions, max_terms, email, api_key, max_concurrency=9, pbar=None):

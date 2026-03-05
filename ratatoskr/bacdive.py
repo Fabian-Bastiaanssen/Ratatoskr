@@ -1,7 +1,8 @@
 import re
 import sys
 from typing_extensions import final
-
+import os
+import pickle as pkl
 from async_dsmz import bacdive_async
 from loguru import logger
 from tqdm import tqdm
@@ -667,7 +668,7 @@ async def fetch_genus_data(genus, type_strains, bacdive_client, pbar):
 
 
 async def gather_all_genera(bacdive_client, type_strain_dict):
-    pbar = tqdm(total=len(type_strain_dict), desc="Genus groups", unit="genus", ncols=100, colour="magenta")
+    pbar = tqdm(total=len(type_strain_dict), desc="Genus groups", unit="genera", ncols=100, colour="magenta")
     tasks = [
         fetch_genus_data(genus, type_strains, bacdive_client, pbar)
         for genus, type_strains in type_strain_dict.items()
@@ -677,6 +678,7 @@ async def gather_all_genera(bacdive_client, type_strain_dict):
     await bacdive_client.close()
     pbar.close()
     return results
+
 
 
 def get_genus_type_strains(bacdive_client, type_strain_dict):
@@ -692,7 +694,6 @@ def get_genus_type_strains(bacdive_client, type_strain_dict):
 def retrieve_extra_info_from_bacdive(lpsn_types, bacdive_client):
 
     logger.info("Step 2 of 4: Retrieving extra info from BacDive for LPSN type strains.")
-
     lpsn_types = get_genus_type_strains(bacdive_client, split_lpsn_types_list_to_genus_dict(lpsn_types))
     logger.success("Extra info retrieval from BacDive complete.\n")
 

@@ -36,7 +36,7 @@ async def fetch_data(url, session, headers, sem, mode, pbar=None, query_length=1
                         results.extend(data.get(mode, []))
                         next_token = data.get("next_page_token")
                         if next_token:
-                            logger.debug(f"Fetching next page with token {next_token}")
+                            # logger.debug(f"Fetching next page with token {next_token}")
                             base_url = next_url.split("&page_token=")[0]
                             next_url = f"{base_url}&page_token={next_token}"
                         else:

@@ -4,6 +4,8 @@ import subprocess
 import sys
 import asyncio
 import aiohttp
+import time
+from io import BytesIO
 
 from Bio import Entrez, SeqIO
 from loguru import logger
@@ -14,7 +16,35 @@ import polars as pl
 from ratatoskr.misc import get_haves_and_have_nots, fetch_data, tidy_genome_dir
 from ratatoskr.utils import get_credentials, unzip_file, make_dir, move_and_rename, delete_thing
 from ratatoskr.outputs import output_metadata
+class RateLimiter:
+    def __init__(self, max_rate: float):
+        self.max_rate = max_rate          # requests per second
+        self.interval = 1 / max_rate
+        self._lock = asyncio.Lock()
+        self._last_call = 0
 
+    async def acquire(self):
+        async with self._lock:
+            now = time.monotonic()
+            wait = self.interval - (now - self._last_call)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_call = time.monotonic()
+
+async def esearch(term, db="nuccore", retmax=10**4, email=None, api_key=None, rate_limiter=None):
+    await rate_limiter.acquire()
+    params = {"db": db, "term": term, "retmax": str(retmax), "retmode": "xml", "email": email, "api_key": api_key, "usehistory": "y"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi", params=params) as resp:
+            text = await resp.read()
+            return BytesIO(text)
+async def esummary(query_key, webenv, db="nuccore", email=None, api_key=None, rate_limiter=None):
+    await rate_limiter.acquire()
+    params = {"db": db, "query_key":str(query_key), "webenv": str(webenv), "retmode": "xml", "email": email, "api_key": api_key}
+    async with aiohttp.ClientSession() as session:
+        async with session.get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi", params=params) as resp:
+            text = await resp.read()
+            return BytesIO(text)
 
 def get_genbank_api_info(dev_mode=False):
     """
@@ -55,13 +85,10 @@ def retrieve_ncbi_taxon_ids(lpsn_types, api_key):
         if type_strain.parent_subspecies is not None:
             type_strain.binomial_synonyms.append(type_strain.parent_species)
         query_terms.extend(type_strain.binomial_synonyms)
-    logger.debug(f"Retrieving NCBI Taxon IDs for {len(query_terms)} query terms.")
-    logger.debug(query_terms)
 
     pbar = tqdm.tqdm(total=len(query_terms), desc="Requesting NCBI Taxon IDs", unit="query", ncols=100, colour="magenta")
     data_list = asyncio.run(request_ncbi_taxon_ids(query_terms,  api_key, sem=None, pbar=pbar))
-
-    if len (data_list) == 0:
+    if len (data_list) == 0 or all([x.get("taxonomy") is None for x in data_list]):
         logger.info("No NCBI Taxon IDs retrieved from GenBank. Continuing")
         return has_ncbi_taxid + missing_ncbi_taxid
 
@@ -82,54 +109,192 @@ def retrieve_ncbi_taxon_ids(lpsn_types, api_key):
             logger.debug(f"No Taxon ID found for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species}")
             type_strain.species_ncbi_tax_id = []
 
-    return has_ncbi_taxid + missing_ncbi_taxid
-            
+    return has_ncbi_taxid +missing_ncbi_taxid
+async def search_16s(batch, email, api_key, pbar, rate_limiter):
+    max_retries = 5
+    batch_df = pl.LazyFrame([{"ncbi_tax_id": type_strain.strain_ncbi_tax_id +  type_strain.species_ncbi_tax_id, "parent_species_id": type_strain.parent_species_id, "parent_subspecies_id": type_strain.parent_subspecies_id} for type_strain in batch], schema={"ncbi_tax_id": pl.List(pl.String), "parent_species_id": pl.Int64, "parent_subspecies_id": pl.Int64})
+    batch_df = batch_df.explode(["ncbi_tax_id"])
+    ids = batch_df.select(pl.col("ncbi_tax_id")).unique().collect().to_series().drop_nulls().to_list()
+    have_rRNA = []
+    missing_rRNA = []
+    # ids =[item for v in [type_strain.strain_ncbi_tax_id,type_strain.species_ncbi_tax_id] for item in (v if isinstance(v, list) else [v])]
+    term = " OR ".join([f"txid{i}[Organism:exp]" for i in ids if i is not None]) + " AND 16S[Title]"
+    for attempt in range(1, max_retries + 1):
+        try:
+            search_result_xml = await esearch(db="nucleotide", term=term, email = email, retmax=10**6, api_key=api_key, rate_limiter=rate_limiter)
+            search_result = Entrez.read(search_result_xml)
+            webenv = search_result["WebEnv"]
+            query_key = search_result["QueryKey"]
+            break
+        except Exception as e:
+            if attempt == max_retries:
+                logger.error(f"Failed to retrieve search results for batch after {max_retries} attempts. Error: {e}")
+                pbar.update(len(batch))
+                return {"hits": have_rRNA, "misses" : batch}
+            await asyncio.sleep(2 ** attempt)
+    if search_result.get("Count") != "0":
+        for attempt in range(1, max_retries + 1):
+            try:
+                records = await esummary(query_key, webenv, db="nuccore", api_key=api_key, email=email, rate_limiter=rate_limiter)
+                records = Entrez.read(records)
+                break
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"Failed to retrieve esummary results for batch after {max_retries} attempts. Error: {e}")
+                    pbar.update(len(batch))
+                    return {"hits": have_rRNA, "misses" : batch}
+                await asyncio.sleep(2 ** attempt)
+        records_df = pl.LazyFrame({'Length': int(x.get("Length")), 'Status': x.get("Status"), 'AccessionVersion': x.get("AccessionVersion"), 'CreateDate': x.get("CreateDate"), 'TaxId': str(int(x.get("TaxId")))} for x in records)
+        records_df = records_df.filter((pl.col("Length") >= 750) & (pl.col("Length") <= 2500) & (pl.col("Status") == "live") & (pl.col("AccessionVersion").str.len_chars() < 12))
+        batch_df = batch_df.join(records_df.select(pl.col("TaxId").alias("ncbi_tax_id"), pl.col("AccessionVersion"), pl.col("CreateDate")), on="ncbi_tax_id", how="left")
+        batch_df = batch_df.sort("CreateDate", descending=False).group_by("parent_species_id", "parent_subspecies_id").agg(pl.col("AccessionVersion").first().alias("rRNA_acc")).collect()
+        subspecies_lookup = (batch_df.filter(pl.col("parent_subspecies_id").is_not_null())
+            .select("parent_subspecies_id", "rRNA_acc")
+            .to_dict(as_series=False))
+        subspecies_map = dict(zip(subspecies_lookup["parent_subspecies_id"],
+                            subspecies_lookup["rRNA_acc"]))
+
+        species_lookup = (batch_df.filter(pl.col("parent_subspecies_id").is_null(), pl.col("parent_species_id").is_not_null())
+            .select("parent_species_id", "rRNA_acc")
+            .to_dict(as_series=False))
+        species_map = dict(zip(species_lookup["parent_species_id"], species_lookup["rRNA_acc"]))
+
+        for type_strain in batch:
+            if type_strain.parent_subspecies_id is not None:
+                hit = subspecies_map.get(type_strain.parent_subspecies_id)
+            else:
+                hit = species_map.get(type_strain.parent_species_id)
+
+            if hit is not None:
+                type_strain.rRNA_acc = hit
+                have_rRNA.append(type_strain)
+                pbar.update(1)
+            else:
+                missing_rRNA.append(type_strain)
+    else:
+        missing_rRNA.extend(batch)
+    return {"hits": have_rRNA, "misses" : missing_rRNA}
+async def search_16s_binomial(type_strain, email, api_key, pbar, rate_limiter):
+    max_retries = 5
+    binomial_search_term = " OR ".join([f'("{x}"[Organism])' for x in type_strain.binomial_synonyms])
+    try:
+        strain_search_term = " OR ".join(set([f'("{x.replace(" ", y)}"[Strain])' for x in type_strain.type_names for y in ["_", "-", "."]]))
+    except Exception as e:
+        logger.error(f"Error creating strain search term for type strain {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species}: {e}")
+        strain_search_term = ""
+        pbar.update(1)
+        return type_strain
+    for attempt in range(1, max_retries + 1):
+        try:
+
+            search_result_xml = await esearch(db="nucleotide", term=f"({binomial_search_term}) AND ({strain_search_term}) AND (16S[Title])", email = email, retmax=10**6, api_key=api_key, rate_limiter=rate_limiter)
+            search_result = Entrez.read(search_result_xml)
+            webenv = search_result["WebEnv"]
+            query_key = search_result["QueryKey"]
+            break
+        except Exception as e:
+            if attempt == max_retries:
+                logger.error(f"Failed to retrieve search results for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} after {max_retries} attempts. Error: {e}")
+                logger.debug(f"Search result XML: {search_result_xml.getvalue().decode()}")
+                pbar.update(1)
+                return type_strain
+            await asyncio.sleep(2 ** attempt)
+    if search_result.get("Count") != "0":
+        for attempt in range(1, max_retries + 1):
+            try:
+                records = await esummary(query_key, webenv, db="nuccore", api_key=api_key, email=email, rate_limiter=rate_limiter)
+                records = Entrez.read(records)
+                record = [x for x in records if 750 <= int(x.get("Length")) <= 2500 and x.get("Status") == "live" and len(x.get("AccessionVersion")) < 12]
+                if len(record) > 0:
+                    record = sorted(record, key=lambda x: datetime.strptime(x.get("CreateDate"), "%Y/%m/%d"))[0].get("AccessionVersion")
+                    type_strain.rRNA_acc = record
+                    pbar.update(1)
+                    return type_strain
+                break
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"Failed to retrieve esummary results for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} after {max_retries} attempts. Error: {e}")
+                    logger.debug(f"Esummary result XML: {records}")
+                    pbar.update(1)
+                    return type_strain
+                await asyncio.sleep(2 ** attempt)
+
+    pbar.update(1)
+    return type_strain
+def batch_missing_rrna(missing_rRNA, max_ids=80):
+    batches = []
+    current_batch = []
+    current_count = 0
+
+    for item in missing_rRNA:
+        if item.strain_ncbi_tax_id is None:
+            item.strain_ncbi_tax_id = []
+        if item.species_ncbi_tax_id is None:
+            item.species_ncbi_tax_id = [] 
+        item_count = (
+            len(item.strain_ncbi_tax_id) +
+            len(item.species_ncbi_tax_id)
+        )
+
+        # If a single item exceeds the limit, force it into its own batch
+        if item_count > max_ids:
+            if current_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_count = 0
+            batches.append([item])
+            continue
+
+        # Start a new batch if needed
+        if current_count + item_count > max_ids:
+            batches.append(current_batch)
+            current_batch = []
+            current_count = 0
+
+        current_batch.append(item)
+        current_count += item_count
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+async def retrieve_missing_16S(missing_rRNA, max_terms, email, api_key, max_concurrency=10, pbar=None):
+    semaphore = asyncio.Semaphore(max_concurrency)
+    rate_limiter = RateLimiter(max_rate=8)
+    batches = batch_missing_rrna(missing_rRNA, max_ids=max_terms)
+    async def limited_search(batch, pbar, rate_limiter):
+        async with semaphore:
+            return await search_16s(batch, email, api_key, pbar=pbar, rate_limiter=rate_limiter)
+    tasks = [limited_search(batch, pbar=pbar, rate_limiter=rate_limiter) for batch in batches]
+    batch_results = await asyncio.gather(*tasks)
+    hits = [x for r in batch_results for x in r["hits"]]
+    misses = [x for r in batch_results for x in r["misses"]]
+    if len(misses) > 0:
+        logger.debug(f"{len(misses)} type strains missing 16S rRNA gene information after initial search. Attempting binomial and strain name search for these strains.")
+        async def limited_binomial_search(type_strain, pbar, rate_limiter):
+            async with semaphore:
+                return await search_16s_binomial(type_strain, email, api_key, pbar=pbar, rate_limiter=rate_limiter)
+        binomial_tasks = [limited_binomial_search(type_strain, pbar=pbar, rate_limiter=rate_limiter) for type_strain in misses]
+        binomial_results = await asyncio.gather(*binomial_tasks)
+        return hits + binomial_results
+    return hits            
 def retrieve_missing_16S_info(lpsn_types, email, api_key):
     """
     Retrieve missing 16S rRNA gene information from GenBank for the given LPSN type strains.
     """
     logger.info("Retrieving missing 16S rRNA gene information from GenBank.")
     Entrez.api_key = api_key
+    incorrect_types = [ts for ts in lpsn_types if type(ts) == str]
     has_rRNA, missing_rRNA = get_haves_and_have_nots(lpsn_types, "rRNA_acc")
-    
-    for type_strain in tqdm.tqdm(missing_rRNA, desc="Retrieving missing 16S rRNA gene info", unit="type strain", ncols=100, colour="magenta"):
-        for i in [item for v in [type_strain.strain_ncbi_tax_id,type_strain.species_ncbi_tax_id] for item in (v if isinstance(v, list) else [v])]:
-            if i is not None:
-                handle = Entrez.esearch(db="nucleotide", term=f"txid{i}[Organism:exp] AND 16S[Title]", email = email, retmax=10**6)
-                try:
-                    handle = Entrez.read(handle)
-                except Exception as e:
-                    logger.error(f"Error reading Entrez handle for type strain {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} with taxid {i}: {e}")
-                    continue
-                if handle.get("Count") != "0":
-                    id = handle.get("IdList")
-                    record = [x for x in Entrez.read(Entrez.esummary(db="nucleotide", id=id, email=email)) if 750 <= int(x.get("Length")) <= 2500 and x.get("Status") == "live" and len(x.get("AccessionVersion")) < 12]
-                    if len(record) > 0:
-                        record = sorted(record, key=lambda x: datetime.strptime(x.get("CreateDate"), "%Y/%m/%d"))[0].get("AccessionVersion")
-                        type_strain.rRNA_acc = record
-                        break
-        if type_strain.rRNA_acc is None: # if still none after taxid search, do name/strain search
-            binomial_search_term = " OR ".join([f'("{x}"[Organism])' for x in type_strain.binomial_synonyms])
-            try:
-                strain_search_term = " OR ".join(set([f'("{x.replace(" ", y)}"[Strain])' for x in type_strain.type_names for y in ["_", "-", "."]]))
-            except Exception as e:
-                logger.error(f"Error creating strain search term for type strain {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species}: {e}")
-                strain_search_term = ""
-            try:
-                handle = Entrez.esearch(db="nucleotide", term=f"({binomial_search_term}) AND ({strain_search_term}) AND (16S[Title])", email = email, retmax=10**6)
-                handle = Entrez.read(handle)
-            except Exception as e:
-                logger.error(f"Error searching Entrez for type strain {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species}: {e}")
-                continue
-    
-            if handle.get("Count") != "0":
-                id = handle.get("IdList")
-                record = [x for x in Entrez.read(Entrez.esummary(db="nucleotide", id=id, email=email)) if 750 <= int(x.get("Length")) <= 2500 and x.get("Status") == "live"]
-                if len(record) > 0:
-                    record = sorted(record, key=lambda x: datetime.strptime(x.get("CreateDate"), "%Y/%m/%d"))
-                    if len(record) > 0:
-                        record = record[0].get("AccessionVersion")
-                    type_strain.rRNA_acc = record.split(".")[0]
+    for type_strain in missing_rRNA:
+        # check if type_strain is missing attribute species_id
+        if not hasattr(type_strain, "parent_species_id"):
+            logger.error(f"Type strain {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} is missing parent_species_id attribute. This is required for 16S retrieval. Skipping this type strain for 16S retrieval.")
+            logger.debug(type_strain)
+    pbar = tqdm.tqdm(total=len(missing_rRNA), desc="Retrieving missing 16S rRNA gene info", unit="type strain", ncols=100, colour="magenta")
+    missing_rRNA = asyncio.run(retrieve_missing_16S(missing_rRNA, max_terms=99, email=email, api_key=api_key, max_concurrency=8, pbar=pbar))
+    pbar.close()
 
     return has_rRNA + missing_rRNA
 
@@ -198,10 +363,10 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
             if len(strain_filtered) > 0:
                 best_hit = strain_filtered.rows(named=True)[0]
                 type_strain.genome_acc = {"accession": best_hit['accession'].split('.')[0], "assembly level": best_hit['assembly_level']}
-            else:
-                logger.debug(f"No genome data found for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} matching type strain names. Just FYI")
-        else:
-            logger.debug(f"No genome data found for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species}. Just FYI")
+        #     else:
+        #         logger.debug(f"No genome data found for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} matching type strain names. Just FYI")
+        # else:
+        #     logger.debug(f"No genome data found for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species}. Just FYI")
         
 
     return has_genome + missing_genome
@@ -212,7 +377,7 @@ def retrieve_genome_sequences(lpsn_types, output_path, threads, api_key):
     logger.info("Retrieving genome sequences from GenBank.")
 
     has_genome_seq, missing_genome_seq = get_haves_and_have_nots(lpsn_types, "genome_acc")
-    logger.info(f"{len(has_genome_seq)} type strains already have genome sequence information. Retrieving sequences for remaining {len(missing_genome_seq)} type strains.")
+    logger.info(f"{len(missing_genome_seq)} type strains have no known genome sequence. Downloading sequences for remaining {len(has_genome_seq)} type strains.")
     with open(output_path / "genome_accessions.txt", "w") as f:
         accessions = {
             x.genome_acc["accession"]
@@ -226,12 +391,15 @@ def retrieve_genome_sequences(lpsn_types, output_path, threads, api_key):
 
     make_dir(output_path / "sequences" / "genomes")
     command = f'datasets download genome accession --inputfile {output_path}/genome_accessions.txt --api-key {api_key} --filename {output_path}/sequences/genomes/genomes.zip --dehydrated --include genome,gbff'
-    logger.info("Downloading dehydrated genome sequences from GenBank")
-    
-    info = subprocess.run(command, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
+    logger.info("Downloading dehydrated genome sequences from GenBank")    
     try:
-        info = subprocess.run(command, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        info = subprocess.Popen(command, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        while True:
+            output = info.stderr.readline()
+            if not output:
+                break
+            logger.info(output.strip())
+        logger.info("Finished downloading genome sequences.")
     except subprocess.CalledProcessError as e:
         logger.error(f"Error downloading genome sequences: {e.stderr}")
         sys.exit(1)
@@ -271,63 +439,130 @@ def check_16S_retrieval(output_path, input_taxon, accessions):
         logger.warning(f"Could not retrieve {len(missing)} 16S rRNA gene sequences.")
         logger.debug(f"Missing accessions: {', '.join(missing)}")
 
-def get_acc_seq_lengths(acc_list):
- 
+
+async def validate_accessions(accessions, email, api_key, pbar=None, rate_limiter=None):
+    term = " OR ".join(f"{x}[Accession]" for x in accessions)
+    valid_subset = set()
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            # esearch async call
+            search_result_xml = await esearch(term, db="nuccore", retmax=10**4, api_key=api_key, email=email, rate_limiter=rate_limiter)
+            search_result = Entrez.read(search_result_xml)
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                logger.error(f"Failed to retrieve search results after {max_retries} attempts.")
+                raise
+        webenv = search_result["WebEnv"]
+        query_key = search_result["QueryKey"]
+
+        if search_result.get("Count")!=0 :  # equivalent to Count != "0"
+            for attempt in range(max_retries):
+                try:
+                    # esummary async call
+                    records = await esummary(query_key, webenv, db="nuccore", api_key=api_key, email=email, rate_limiter=rate_limiter)
+                    records = Entrez.read(records)
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    else:
+                        logger.error(f"Failed to retrieve esummary results after {max_retries} attempts.")
+                        raise
+            # Filter valid records
+            for x in records:
+                length = x.get("Length")
+                status = x.get("Status")
+                acc_ver = x.get("AccessionVersion")
+                if (
+                    length is not None
+                    and 1000 <= int(length) <= 2500
+                    and status == "live"
+                    and acc_ver
+                    and len(acc_ver) < 12
+                ):
+                    valid_subset.add(acc_ver.split(".")[0])
+            if pbar:
+                pbar.update(len(accessions))
+    return valid_subset
+
+async def grouped_validate_accessions(accessions, max_terms, email, api_key, max_concurrency=9, pbar=None):
+    semaphore = asyncio.Semaphore(max_concurrency)
+    batches = [accessions[i:i + max_terms] for i in range(0, len(accessions), max_terms)]
+    rate_limiter = RateLimiter(max_rate=9)
+
+    async def limited_validate(batch, pbar=pbar, rate_limiter=None):
+        async with semaphore:
+            return await validate_accessions(batch, email, api_key, pbar=pbar, rate_limiter=rate_limiter)
+    tasks = [limited_validate(batch, pbar=pbar, rate_limiter=rate_limiter) for batch in batches]
+    batch_results = await asyncio.gather(*tasks)
+    
+    # Merge all sets
+    valid_accessions = set().union(*batch_results)
+    return valid_accessions
+
+def get_acc_seq_lengths(acc_list, api_key=None, email=None):
     accessions = [x.split(".")[0] for x in acc_list]
     if not accessions:
         return []
-
-    # Entrez has practical limits on query length; split into smaller runs to avoid errors.
-    max_terms = 200
     valid_accessions = set()
-
-    for start in range(0, len(accessions), max_terms):
-        subset = accessions[start:start + max_terms]
-        term = " OR ".join(f"{x}[Accession]" for x in subset)
-        try:
-            handle = Entrez.esearch(db="nuccore", term=term, retmax=10**6)
-            handle = Entrez.read(handle)
-            if handle.get("Count") != "0":
-                ids = handle.get("IdList")
-                record = [
-                    x for x in Entrez.read(Entrez.esummary(db="nuccore", id=ids))
-                    if 1000 <= int(x.get("Length")) <= 2500
-                    and x.get("Status") == "live"
-                    and len(x.get("AccessionVersion")) < 12
-                ]
-                valid_accessions.update(
-                    x.get("AccessionVersion").split(".")[0]
-                    for x in record
-                    if x.get("AccessionVersion")
-                )
-        except Exception as e:
-            logger.error(f"Error reading Entrez handle for sequence length retrieval: {e}")
+    pbar = tqdm.tqdm(total=len(accessions), desc="Validating 16S rRNA gene sequences", unit="type strain", ncols=100, colour="magenta")
+    valid_accessions = asyncio.run(grouped_validate_accessions(accessions, max_terms=100, email=email, api_key=api_key, pbar=pbar))
+    pbar.close()
 
     return [x for x in accessions if x in valid_accessions]
+
+async def retrieve_accessions(accessions, email, api_key, rate_limiter=None):
+    term = " OR ".join(f"{x}[Accession]" for x in accessions)
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            # esearch async call
+            search_result_xml = await esearch(term, db="nuccore", retmax=10**4, api_key=api_key, email=email, rate_limiter=rate_limiter)
+            search_result = Entrez.read(search_result_xml)
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                logger.error(f"Failed to retrieve search results after {max_retries} attempts.")
+                raise e
+
+    return set(search_result.get("IdList", []))
+
+async def grouped_retrieve_16S(accessions, max_terms, email, api_key, max_concurrency=9):
+    semaphore = asyncio.Semaphore(max_concurrency)
+    batches = [accessions[i:i + max_terms] for i in range(0, len(accessions), max_terms)]
+    rate_limiter = RateLimiter(max_rate=9)
+
+    async def limited_retrieve(batch, rate_limiter=None):
+        async with semaphore:
+            return await retrieve_accessions(batch, email, api_key, rate_limiter=rate_limiter)
+    tasks = [limited_retrieve(batch, rate_limiter=rate_limiter) for batch in batches]
+    batch_results = await asyncio.gather(*tasks)
+    gi_list = set().union(*batch_results)
+    return gi_list
+
  
-def retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon):
+def retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon, api_key):
     
     logger.info("Retrieving 16S rRNA gene sequences from GenBank.")
 
     retmax = 10**6
 
     accessions = [x.rRNA_acc.split(".")[0] for x in lpsn_types if x.rRNA_acc is not None]
-    term = " OR ".join(f"{x}[Accession]" for x in accessions)
-    
-    try:
-        handle = Entrez.esearch(db="nucleotide", term=term, email = email, retmax=retmax)
-        giList = Entrez.read(handle)['IdList']
-    except Exception as e:
-        logger.error(f"Error searching for 16S rRNA gene sequences: {e}")
-        sys.exit(1)
-
+    giList = asyncio.run(grouped_retrieve_16S(accessions, max_terms=100, email=email, api_key=api_key))
     if len(giList) == 0:
         logger.warning(f"No 16S rRNA gene sequences found. Continuing without 16S sequences.")
         search_results = None
     
     if len(giList) > 0:
+        logger.info(f"Found {len(giList)} 16S rRNA gene sequences to retrieve from GenBank.")
         try:
-            search_handle = Entrez.epost(db="nucleotide", id=",".join(giList), email=email)
+            search_handle = Entrez.epost(db="nucleotide", id=",".join(giList), email=email, api_key=api_key)
             search_results = Entrez.read(search_handle)
             webenv, query_key = search_results["WebEnv"], search_results["QueryKey"] 
         except Exception as e:
@@ -339,8 +574,8 @@ def retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon):
 
     if search_results is not None:
         with open( output_path / "sequences" / "16S" / "16S.fasta", "w" ) as f:
-            for start in range(0, len(giList), 100):
-                handle = Entrez.efetch(db='nucleotide', rettype="fasta", retmode='text', retstart = start, retmax=100, webenv= webenv, query_key= query_key, email=email)
+            for start in tqdm.tqdm(range(0, len(giList), 100), desc="Downloading 16S sequences", unit="batch", ncols=100, colour="magenta"):
+                handle = Entrez.efetch(db='nucleotide', rettype="fasta", retmode='text', retstart = start, retmax=100, webenv= webenv, query_key= query_key, email=email, api_key=api_key)
                 data = handle.read().replace("\n\n", "\n")
                 f.write(data)
         check_16S_retrieval(output_path, input_taxon, accessions)
@@ -364,7 +599,7 @@ def retrieve_info_from_genbank(lpsn_types, output_path, threads, dev_mode, input
         logger.info("Skipping sequence download steps as per user request.\n")
         return lpsn_types
     retrieve_genome_sequences(lpsn_types, output_path, threads, api_key)
-    retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon)
+    retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon, api_key)
 
     logger.success("Metadata retrieval from GenBank complete.\n")
 

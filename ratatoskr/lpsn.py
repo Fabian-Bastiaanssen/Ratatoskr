@@ -229,7 +229,7 @@ def load_rRNA_cache(cache = None, no_cache=False):
     return rRNA_cache
 
 
-def check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache=None):
+def check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache=None, api_key=None, email=None):
     
     logger.info("Checking LPSN rRNA accessions for validity.")
 
@@ -240,14 +240,14 @@ def check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache=None):
    
     good_lengths = set()
     if len(accs_needing_checked) > 0:
-        good_lengths = get_acc_seq_lengths(accs_needing_checked)
+        good_lengths = get_acc_seq_lengths(accs_needing_checked, api_key=api_key, email=email)
     good_lengths = set(good_lengths) | rRNA_cache["good"]
    
     updated_hits = []
     for hit in lpsn_hits:
         if hit.rRNA_acc is not None:
             if hit.rRNA_acc.split(".")[0] not in good_lengths:
-                logger.warning(f"rRNA accession {hit.rRNA_acc} for {hit.parent_species} type strain {hit.type_names[0]} is shorter than 1000 bp or longer than 2000 bp, which may indicate an issue with the sequence. Removing.")
+                logger.debug(f"rRNA accession {hit.rRNA_acc} for {hit.parent_species} type strain {hit.type_names[0]} is shorter than 1000 bp or longer than 2000 bp, which may indicate an issue with the sequence. Removing.")
                 hit.rRNA_acc = None
         updated_hits.append(hit)
 
@@ -262,16 +262,14 @@ def check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache=None):
     return updated_hits
 
    
-def retrieve_LPSN_type_info(input, output_path, threads, level, lpsn_client, dev_mode, no_cache, cache):
+def retrieve_LPSN_type_info(input, output_path, threads, level, lpsn_client, dev_mode, no_cache, cache, api_key=None, email=None):
  
     logger.info("Step 1 of 4: Retrieving taxonomical data from LPSN.")
- 
+    logger.info("No cached LPSN hits found, retrieving from LPSN API.")
     taxonomic_level = get_taxaomic_levels(input) if level == "auto" else level
     full_lpsn_df = search_all_lpsn(lpsn_client)
     lpsn_hits = filter_dataframe(full_lpsn_df, input, taxonomic_level)
     lpsn_hits = polars_to_type_strain_list(lpsn_hits)
-    lpsn_hits = check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache)
-   
+    lpsn_hits = check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache, api_key, email)
     logger.success(f"Retrieved metadata for {len(lpsn_hits)} type strains from LPSN.\n")
- 
     return lpsn_hits

@@ -15,7 +15,7 @@ def get_description():
     with open("README.md", "r") as README:
         description = README.read()
 
-data_files = [(".", ["LICENSE", "README.md", "ratatoskr/VERSION", "ratatoskr/data/rRNA_cache.pkl"])]
+data_files = [(".", ["LICENSE", "README.md", "ratatoskr/VERSION"])]
 
 setup(
     name="ratatoskr",

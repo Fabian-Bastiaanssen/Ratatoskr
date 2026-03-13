@@ -34,7 +34,7 @@ setup(
     },
     packages=find_packages(),
     install_requires=[
-        "async-dsmz>=2025.0.5",
+        "async-dsmz>=1.0.6",
         "bacdive==1.0.0",
         "biopython>=1.86",
         "loguru>=0.7.2",

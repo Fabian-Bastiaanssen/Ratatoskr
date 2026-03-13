@@ -29,6 +29,9 @@ setup(
     author="Chris Turkington and Fabian Bastiaanssen",
     author_email="chrisjrt1@gmail.com",
     data_files=data_files,
+    package_data={
+        "ratatoskr": ["data/*", "data/**/*"]
+    },
     packages=find_packages(),
     install_requires=[
         "async-dsmz>=2025.0.5",

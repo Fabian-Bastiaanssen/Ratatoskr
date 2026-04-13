@@ -451,7 +451,6 @@ def retrieve_checkm_info(lpsn_types, api_key):
     df= df.select([pl.col('accession'), pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
     for type_strain in tqdm.tqdm(has_genome, desc="Processing checkm info", unit="type strain", ncols=100, colour="magenta"):
         filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).collect()
-        print(filtered)
         if len(filtered) > 0:
             best_hit = filtered.rows(named=True)[0]
             best_hit_strain = best_hit.get("strain", [None])[0]
@@ -459,7 +458,6 @@ def retrieve_checkm_info(lpsn_types, api_key):
             if type_strain.type_names is not None:
                 custom_order = [best_hit_strain, "dsm", "atcc", "ntcc"]
                 type_strain.type_names =  sorted(type_strain.type_names, key=lambda x: (x not in custom_order, x))
-            print(best_hit)
             type_strain.genome_acc.update({"checkm_completeness": best_hit.get('checkm_completeness', ''), "checkm_contamination": best_hit.get('checkm_contamination', '')})
     return has_genome + missing_genome   
 

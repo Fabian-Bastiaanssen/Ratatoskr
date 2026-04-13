@@ -6,6 +6,7 @@ from pathlib import Path
 from ratatoskr.utils import get_credentials, make_dir, get_version
 from ratatoskr.lpsn import set_lpsn_client
 from ratatoskr.bacdive import set_bacdive_client
+from datetime import datetime
 
 def set_logger_format(debug: bool = False) -> str:
     """

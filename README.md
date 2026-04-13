@@ -84,7 +84,7 @@ Commands:
 To run Ratatoskr use the `run` command:
 
 ```
-Usage: ratatoskr.py run [OPTIONS]
+Usage: ratatoskr run [OPTIONS]
 
     Run the ratatoskr pipeline.
 
@@ -96,7 +96,7 @@ Options:
   --threads         -t  INTEGER RANGE [x>=1]                Number of threads to be used (only impacts downloading). [default: 1]
   --force           -f                                      Force overwrite of output directory.
   --dev_mode        -d                                      Run in development mode.
-  --skip_download   -s                                      Skip sequence download steps.
+  --skip_download   -s  [all|16s|genomes]                   Skip all or specific sequence download steps.
   --no_cache        -n                                      Don't use 16S rRNA cache information.
   --cache           -c  TEXT                                FOR DEV MODE ONLY: Path to create new cache file.
   --version         -v                                      Show the version and exit.

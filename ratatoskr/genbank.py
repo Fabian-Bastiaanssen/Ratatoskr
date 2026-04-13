@@ -604,7 +604,6 @@ def retrieve_info_from_genbank(lpsn_types, output_path, threads, dev_mode, input
     for type_strain in lpsn_types:
         if type_strain.genome_acc is not None:
             type_strain.genome_acc['accession'] = type_strain.genome_acc['accession'].split(".")[0]
-
     if skip_download != "all" and skip_download != "genomes":
         # logger.info("Skipping sequence download steps as per user request.\n")
         retrieve_genome_sequences(lpsn_types, output_path, threads, api_key)

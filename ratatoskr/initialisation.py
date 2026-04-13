@@ -19,7 +19,7 @@ def set_logger_format(debug: bool = False) -> str:
         str: The formatted logger string pattern used for logging.
     """
     
-    logger_format = "<magenta>{time:YYYY-MM-DD HH:mm:ss}</magenta> | <level>{level: <8}</level> | <black>{message}</black>"
+    logger_format = "<magenta>{time:YYYY-MM-DD HH:mm:ss}</magenta> | <level>{level: <8}</level> | <level>{message}</level>"
     logger.remove() # remove default logger format
     if debug:
         logger.add(lambda msg: tqdm.write(msg, end=""), colorize=True, format= logger_format, level="DEBUG")

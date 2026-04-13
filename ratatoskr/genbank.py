@@ -340,8 +340,9 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
 
     df = pl.LazyFrame(data_list)
     if 'checkm_info' not in df.collect_schema().names():
-        df = df.with_columns(pl.struct({'checkm_species_tax_id': None}).alias('checkm_info'))
-    df= df.select([pl.col('accession'), pl.col('organism').struct.field("*"), pl.col('assembly_info').struct.field(['assembly_level','biosample']), pl.col('checkm_info').struct.field('checkm_species_tax_id').alias('checkm_tax_id'), ])
+        df = df.with_columns(pl.struct({'checkm_species_tax_id': None, "completeness": None, "contamination": None}).alias('checkm_info'))
+
+    df= df.select([pl.col('accession'), pl.col('organism').struct.field("*"), pl.col('assembly_info').struct.field(['assembly_level','biosample']), pl.col('checkm_info').struct.field('checkm_species_tax_id').alias('checkm_tax_id'), pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
     if 'strain' not in df.collect_schema().get('infraspecific_names').to_schema():
         df = df.with_columns(pl.col('infraspecific_names').struct.with_fields(strain=pl.lit(None)))
     if 'strain' not in df.collect_schema().get('biosample').to_schema():
@@ -349,19 +350,23 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
 
     df = df.with_columns(pl.col('infraspecific_names').struct.field("strain").alias('infraspecific_names'), pl.col('biosample').struct.field('strain').alias('biosample'))
     enum_type = pl.Enum(("Complete Genome", "Chromosome", "Scaffold", "Contig"))
-    df = df.with_columns(strain=pl.concat_list(pl.col('biosample'), pl.col('infraspecific_names')).list.unique()).unique().sort(pl.col('assembly_level').cast(enum_type)).collect().group_by('tax_id').all()
-    
+    df = df.with_columns(strain=pl.concat_list(pl.col('biosample'), pl.col('infraspecific_names')).list.unique()).unique().sort(pl.col('assembly_level').cast(enum_type), pl.col('checkm_completeness'), descending=[False, True]).collect().group_by('tax_id').all()
     for type_strain in tqdm.tqdm(missing_genome, desc="Processing missing genome info", unit="type strain", ncols=100, colour="magenta"):
         filtered = df.filter(pl.col('tax_id').is_in(type_strain.species_ncbi_tax_id)| pl.col("checkm_tax_id").list.set_intersection(type_strain.species_ncbi_tax_id).list.len() > 0)
         if len(filtered) > 0:
             try:
                 if type(type_strain.type_names) == str:
                     type_strain.type_names = [ts.strip() for ts in type_strain.type_names.split(",")]
-                strain_filtered = filtered.explode(['accession', 'assembly_level', 'strain']).filter(pl.col('strain').list.eval(pl.element().is_in(type_strain.type_names, nulls_equal=True)).list.any())
+                strain_filtered = filtered.explode(['accession', 'assembly_level', 'strain', 'checkm_completeness', 'checkm_contamination']).filter(pl.col('strain').list.eval(pl.element().is_in(type_strain.type_names, nulls_equal=True)).list.any())
             except Exception as e:
                 logger.error(f"Error filtering strains for {type_strain}: {e}")
             if len(strain_filtered) > 0:
                 best_hit = strain_filtered.rows(named=True)[0]
+                best_hit_strain = best_hit.get("strain", [None])[0]
+                # sort type_names so dsm, atcc, ntcc come first, and the best hit strain name is first if it is in the type names, then alphabetically
+                if type_strain.type_names is not None:
+                    custom_order = [best_hit_strain, "dsm", "atcc", "ntcc"]
+                    type_strain.type_names =  sorted(type_strain.type_names, key=lambda x: (x not in custom_order, x))
                 type_strain.genome_acc = {"accession": best_hit['accession'].split('.')[0], "assembly level": best_hit['assembly_level']}
         #     else:
         #         logger.debug(f"No genome data found for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} matching type strain names. Just FYI")
@@ -599,11 +604,12 @@ def retrieve_info_from_genbank(lpsn_types, output_path, threads, dev_mode, input
     for type_strain in lpsn_types:
         if type_strain.genome_acc is not None:
             type_strain.genome_acc['accession'] = type_strain.genome_acc['accession'].split(".")[0]
-    if skip_download:
-        logger.info("Skipping sequence download steps as per user request.\n")
-        return lpsn_types
-    retrieve_genome_sequences(lpsn_types, output_path, threads, api_key)
-    retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon, api_key)
+
+    if skip_download != "all" and skip_download != "genomes":
+        # logger.info("Skipping sequence download steps as per user request.\n")
+        retrieve_genome_sequences(lpsn_types, output_path, threads, api_key)
+    if skip_download != "all" and skip_download != "16s":
+        retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon, api_key)
 
     logger.success("Metadata retrieval from GenBank complete.\n")
 
@@ -614,7 +620,7 @@ def retrieve_sequences_workflow(lpsn_types, output_path, threads, dev_mode, inpu
     
     logger.info("Step 4 of 4: Generating ouputs")
     output_metadata(lpsn_types, output_path)
-    if skip_download:
+    if skip_download == "all":
         logger.info("Skipping sequence download steps as per user request.\n")
         logger.info("###################################")
         logger.info("###     Ratatoskr finished!     ###")

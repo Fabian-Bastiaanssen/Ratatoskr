@@ -109,3 +109,5 @@ def set_up_logger(output_path: Path, force: bool, debug: bool = False) -> None:
     logger.info("###################################")
     logger.info("#####    Ratatoskr v" + get_version() + "     #####")
     logger.info("###################################\n")
+    # provide current date, time and version info in log header for better tracking and reproducibility
+    logger.info(f"Ran on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}, with ratatoskr version {get_version()}")

@@ -80,6 +80,7 @@ def match_parent(main_df, child_df, level, previous_level):
             child_df = (child_df.sort(by='correct', descending=True).group_by(f'parent_{level}_id')
                     .agg(pl.col('lpsn_parent_id').first(),
                         pl.col('full_name').first().alias(f"parent_{level}"),
+                        pl.col("full_name").alias(f"{level}_synonyms"),
                         pl.col('lpsn_taxonomic_status'),
                         pl.col('correct'))) 
             child_df = (child_df
@@ -135,11 +136,14 @@ def filter_dataframe(df, input, taxonomic_level):
     """
     logger.info(f"Filtering LPSN data for {taxonomic_level} {input}.")
     lpsn_hits = (
-        df.filter(pl.col(f"parent_{taxonomic_level}").str.to_lowercase() == input.lower())
+        df.filter(pl.col(f"{taxonomic_level}_synonyms").list.eval(pl.element().str.to_lowercase() == input.lower()).list.any())
           .filter(~((pl.col(f"parent_species").is_null()) & (pl.col(f"parent_subspecies").is_null())))
     ).collect()
-
+    # remove all synonyms cols except binomial_synonyms for better readability
+    lpsn_hits = lpsn_hits.drop([col for col in lpsn_hits.columns if col.endswith("_synonyms") and not col.startswith("binomial")])
     
+
+    print(f"Initial number of hits for {input} at level {taxonomic_level}: {len(lpsn_hits)}")
     if len(lpsn_hits) == 0:
         
         logger.error(f"Could not uniquely identify {input} as {taxonomic_level} on LPSN.")

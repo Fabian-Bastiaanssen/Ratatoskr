@@ -314,7 +314,21 @@ async def request_ncbi_genomes(query_terms, api_key, pbar):
         data_list = await asyncio.gather(*parrallel_tasks)
     await session.close()
     return [item for sublist in data_list for item in sublist if sublist is not None]
-
+async def request_ncbi_checkm(query_terms, api_key, pbar):
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key
+    }
+    logger.debug(f"Requesting Checkm information for {len(query_terms)} genomes from GenBank.")
+    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60000),connector=aiohttp.TCPConnector(limit=9))
+    sem = asyncio.Semaphore(9)
+    urls = [f"https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/{"%2C".join(subset).replace(" ", "%20")}/dataset_report?returned_content=COMPLETE&page_size=1000" for subset in [query_terms[i:i + 100] for i in range(0, len(query_terms), 100)]]
+    query_lengths = [len(subset) for subset in [query_terms[i:i + 100] for i in range(0, len(query_terms), 100)]]
+    parrallel_tasks = [fetch_data(url, session, headers, sem, 'reports', pbar, query_length) for url, query_length in zip(urls, query_lengths)]
+    async with sem:
+        data_list = await asyncio.gather(*parrallel_tasks)
+    await session.close()
+    return [item for sublist in data_list for item in sublist if sublist is not None]
 
 def retrieve_missing_genome_info(lpsn_types, api_key):
     
@@ -408,7 +422,46 @@ def retrieve_genome_sequences(lpsn_types, output_path, threads, api_key):
     except subprocess.CalledProcessError as e:
         logger.error(f"Error downloading genome sequences: {e.stderr}")
         sys.exit(1)
-   
+def retrieve_checkm_info(lpsn_types, api_key):
+    
+    logger.info("Retrieving checkm information from GenBank.")
+
+    query_terms = []
+    
+    has_genome, missing_genome = get_haves_and_have_nots(lpsn_types, "genome_acc")        
+    query_terms = [str(type_strain.genome_acc.get("accession")) for type_strain in has_genome if type_strain.genome_acc is not None and type_strain.genome_acc.get("checkm_completeness") is None]
+    if len(has_genome) == 0:
+        logger.info("No checkm information to retrieve from GenBank. Continuing")
+        return has_genome + missing_genome
+    pbar = tqdm.tqdm(total=len(query_terms), desc="Retrieving checkm info", unit="type strain", ncols=100, colour="magenta")
+    data_list = asyncio.run(request_ncbi_checkm(query_terms, api_key, pbar))
+    pbar.close()
+    
+    logger.debug(f"Retrieved {len(data_list)} checkm records from GenBank.")
+    if len(data_list) == 0:
+        logger.info("No checkm information retrieved from GenBank. Continuing")
+        return has_genome + missing_genome
+    
+    logger.info("Processing checkm information.")
+
+    df = pl.LazyFrame(data_list)
+    if 'checkm_info' not in df.collect_schema().names():
+        df = df.with_columns(pl.struct({'checkm_species_tax_id': None, "completeness": None, "contamination": None}).alias('checkm_info'))
+
+    df= df.select([pl.col('accession'), pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
+    for type_strain in tqdm.tqdm(has_genome, desc="Processing checkm info", unit="type strain", ncols=100, colour="magenta"):
+        filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).collect()
+        print(filtered)
+        if len(filtered) > 0:
+            best_hit = filtered.rows(named=True)[0]
+            best_hit_strain = best_hit.get("strain", [None])[0]
+                # sort type_names so dsm, atcc, ntcc come first, and the best hit strain name is first if it is in the type names, then alphabetically
+            if type_strain.type_names is not None:
+                custom_order = [best_hit_strain, "dsm", "atcc", "ntcc"]
+                type_strain.type_names =  sorted(type_strain.type_names, key=lambda x: (x not in custom_order, x))
+            print(best_hit)
+            type_strain.genome_acc.update({"checkm_completeness": best_hit.get('checkm_completeness', ''), "checkm_contamination": best_hit.get('checkm_contamination', '')})
+    return has_genome + missing_genome   
 
 def rehydrate_genome_sequences(output_path, threads, input_taxon):
 
@@ -601,9 +654,11 @@ def retrieve_info_from_genbank(lpsn_types, output_path, threads, dev_mode, input
 
     lpsn_types = retrieve_missing_16S_info(lpsn_types, email, api_key)
     lpsn_types = retrieve_missing_genome_info(lpsn_types, api_key)
+    lpsn_types = retrieve_checkm_info(lpsn_types, api_key)
     for type_strain in lpsn_types:
         if type_strain.genome_acc is not None:
             type_strain.genome_acc['accession'] = type_strain.genome_acc['accession'].split(".")[0]
+
     if skip_download != "all" and skip_download != "genomes":
         # logger.info("Skipping sequence download steps as per user request.\n")
         retrieve_genome_sequences(lpsn_types, output_path, threads, api_key)

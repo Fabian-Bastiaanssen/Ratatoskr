@@ -367,7 +367,7 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
                 if type_strain.type_names is not None:
                     custom_order = [best_hit_strain, "dsm", "atcc", "ntcc"]
                     type_strain.type_names =  sorted(type_strain.type_names, key=lambda x: (x not in custom_order, x))
-                type_strain.genome_acc = {"accession": best_hit['accession'].split('.')[0], "assembly level": best_hit['assembly_level']}
+                type_strain.genome_acc = {"accession": best_hit['accession'].split('.')[0], "assembly level": best_hit['assembly_level'], "checkm_completeness": best_hit['checkm_completeness'], "checkm_contamination": best_hit['checkm_contamination']}
         #     else:
         #         logger.debug(f"No genome data found for {type_strain.parent_subspecies if type_strain.parent_subspecies is not None else type_strain.parent_species} matching type strain names. Just FYI")
         # else:

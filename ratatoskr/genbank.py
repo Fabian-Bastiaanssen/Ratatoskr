@@ -446,19 +446,35 @@ def retrieve_checkm_info(lpsn_types, api_key):
 
     df = pl.LazyFrame(data_list)
     if 'checkm_info' not in df.collect_schema().names():
-        df = df.with_columns(pl.struct({'checkm_species_tax_id': None, "completeness": None, "contamination": None}).alias('checkm_info'))
+        df = df.with_columns(pl.struct({"completeness": '', "contamination": ''}).alias('checkm_info'))
+    df= df.select([pl.col('accession'), pl.col('organism').struct.field("*"), pl.col('assembly_info').struct.field(['assembly_level','biosample']), pl.col('checkm_info').struct.field('checkm_species_tax_id').alias('checkm_tax_id'), pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
 
-    df= df.select([pl.col('accession'), pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
+    if 'infraspecific_names' not in df.collect_schema().names():
+        df = df.with_columns(pl.struct({"strain": pl.lit(None)}).alias('infraspecific_names'))
+    if 'strain' not in df.collect_schema().get('infraspecific_names').to_schema():
+        df = df.with_columns(pl.col('infraspecific_names').struct.with_fields(strain=pl.lit(None)))
+    if 'biosample' not in df.collect_schema().names():
+        df = df.with_columns(pl.struct({"strain": pl.lit(None)}).alias('biosample'))
+    if 'strain' not in df.collect_schema().get('biosample').to_schema():
+        df = df.with_columns(pl.col('biosample').struct.with_fields(strain=pl.lit(None)))
+
+    df = df.with_columns(pl.col('infraspecific_names').struct.field("strain").alias('infraspecific_names'), pl.col('biosample').struct.field('strain').alias('biosample'))
+    df = df.with_columns(strain=pl.concat_list(pl.col('biosample'), pl.col('infraspecific_names')).list.unique()).unique()
+
+    df= df.select([pl.col('accession'), pl.col('checkm_completeness'), pl.col('checkm_contamination'), pl.col('strain')])
     for type_strain in tqdm.tqdm(has_genome, desc="Processing checkm info", unit="type strain", ncols=100, colour="magenta"):
-        filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).collect()
+        filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).fill_null(' ').collect()
         if len(filtered) > 0:
             best_hit = filtered.rows(named=True)[0]
             best_hit_strain = best_hit.get("strain", [None])[0]
-                # sort type_names so dsm, atcc, ntcc come first, and the best hit strain name is first if it is in the type names, then alphabetically
+            best_hit_completeness = best_hit.get("checkm_completeness", ' ') if best_hit.get("checkm_completeness") is not None else ' '
+            best_hit_contamination = best_hit.get("checkm_contamination", ' ') if best_hit.get("checkm_contamination") is not None else ' '
+            # sort type_names so dsm, atcc, ntcc come first, and the best hit strain name is first if it is in the type names, then alphabetically
             if type_strain.type_names is not None:
                 custom_order = [best_hit_strain, "dsm", "atcc", "ntcc"]
                 type_strain.type_names =  sorted(type_strain.type_names, key=lambda x: (x not in custom_order, x))
-            type_strain.genome_acc.update({"checkm_completeness": best_hit.get('checkm_completeness', ''), "checkm_contamination": best_hit.get('checkm_contamination', '')})
+            
+            type_strain.genome_acc.update({"checkm_completeness": best_hit_completeness, "checkm_contamination": best_hit_contamination})
     return has_genome + missing_genome   
 
 def rehydrate_genome_sequences(output_path, threads, input_taxon):

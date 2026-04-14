@@ -117,7 +117,7 @@ def search_all_lpsn(lpsn_client):
                 if taxon == 'domain':
                     df = (
                         pl.LazyFrame(hits).rename({'id': 'parent_domain_id'})
-                            .select([pl.col('parent_domain_id'), pl.col('full_name').alias('parent_domain')])
+                            .select([pl.col('parent_domain_id'), pl.col('full_name').alias('parent_domain'), pl.col('full_name').cast(pl.List(pl.String)).alias('domain_synonyms')])
                     )
                 else:
                     df = match_parent(df, pl.LazyFrame(hits), taxon, previous_level)

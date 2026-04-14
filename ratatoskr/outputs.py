@@ -22,7 +22,7 @@ def get_genomic_data(type_strain, type_name):
     for a in genomic_attrs:
         if a == "genome_acc":
             bg = getattr(type_strain, a) or {}
-            values.append(f"{bg.get('accession','')}\t{bg.get('assembly level','')}")
+            values.append(f"{bg.get('accession','')}\t{bg.get('assembly level','')}\t{bg.get('checkm_completeness','')}\t{bg.get('checkm_contamination','')}")
         else:
             values.append(getattr(type_strain, a) or "")
     return "\t".join(values)
@@ -247,7 +247,7 @@ def output_general_characteristics(lpsn_types, output_path):
 
 def output_sequence_metadata(lpsn_types, output_path):
     make_dir( output_path / "sequences" )
-    genomic_tsv = ["\t".join(["Name", "rRNA_accession", "Genome_accession", "Genome_completeness"])]
+    genomic_tsv = ["\t".join(["Name", "rRNA_accession", "Genome_accession", "Assembly_level", "CheckM_completeness", "CheckM_contamination"])]
     
     for ts in lpsn_types:
         type_name = " ".join([ts.parent_subspecies, ts.type_names[0]] if ts.parent_subspecies is not None else [ts.parent_species, ts.type_names[0]])

@@ -96,9 +96,10 @@ def main_cli():
         "-s",
         "--skip_download",
         help="Skip all or specific sequence download steps.",
-        type=click.Choice(['all', '16s', 'genomes'], case_sensitive=False),
+        type=click.Choice(['all', '16s', 'genomes', 'none'], case_sensitive=False),
         callback=lambda ctx, param, value: value.lower(),
         show_default = True,
+        default = 'none',
         required=False
     )
 @click.option(

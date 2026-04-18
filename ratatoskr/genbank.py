@@ -335,8 +335,23 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
     logger.info("Retrieving genome information from GenBank.")
 
     query_terms = []
-    
-    has_genome, missing_genome = get_haves_and_have_nots(lpsn_types, "genome_acc")        
+    has_genome_first, missing_genome = get_haves_and_have_nots(lpsn_types, "genome_acc")      
+    query_terms_has_genome = [str(type_strain.genome_acc.get("accession")) for type_strain in has_genome_first if type_strain.genome_acc is not None]
+    has_genome =[]
+    if len(query_terms_has_genome) !=0:
+        pbar = tqdm.tqdm(total=len(query_terms_has_genome), desc="Confirming known genome info", unit="type strain", ncols=100, colour="magenta")
+        data_list_has = asyncio.run(request_ncbi_checkm(query_terms_has_genome, api_key, pbar))
+        pbar.close()
+        df = pl.DataFrame(data_list_has).with_columns(pl.col('accession').str.replace('\\.[0-9]+$', ''))
+        for index, type_strain in enumerate(has_genome_first):
+            if type_strain.genome_acc['accession'] not in df['accession']:
+                logger.info(f'{type_strain.parent_species} was assigned accesion {type_strain.genome_acc["accession"]}, but this record is supressed or missing. Redoing assignment')
+                type_strain.genome_acc['accession'] =''
+                missing_genome.append(type_strain)
+            else:
+                has_genome.append(type_strain)
+                
+        
     query_terms = [str(ncbi_id) for type_strain in missing_genome for ncbi_id in type_strain.species_ncbi_tax_id if type_strain.species_ncbi_tax_id is not None]
     if len(missing_genome) == 0:
         logger.info("No missing genome information to retrieve from GenBank. Continuing")

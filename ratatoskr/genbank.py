@@ -343,9 +343,20 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
         data_list_has = asyncio.run(request_ncbi_checkm(query_terms_has_genome, api_key, pbar))
         pbar.close()
         df = pl.DataFrame(data_list_has).with_columns(pl.col('accession').str.replace('\\.[0-9]+$', ''))
-        for index, type_strain in enumerate(has_genome_first):
-            if type_strain.genome_acc['accession'] not in df['accession']:
+        for type_strain in has_genome_first:
+            if 'atypical' not in df.schema.get('assembly_info', pl.Struct({'none': pl.String})).to_schema():
+                df = df.with_columns(assembly_info={'atypical': {'is_atypical': None, 'warnings': [None]}})
+            filtered_df = df.filter(pl.col('accession') == str(type_strain.genome_acc.get("accession"))).with_columns(pl.col('assembly_info').struct.field('atypical')).unnest('atypical')
+            if len(filtered_df) == 0:
                 logger.info(f'{type_strain.parent_species} was assigned accesion {type_strain.genome_acc["accession"]}, but this record is supressed or missing. Redoing assignment')
+                type_strain.genome_acc['accession'] =''
+                missing_genome.append(type_strain)
+            elif filtered_df.select(pl.col('is_atypical').any()).item():
+                if filtered_df.select(pl.col('warnings')).item() is not [None]:
+                    reasons = "reasons: " + ", ".join(filtered_df.select(pl.col('warnings')).item())
+                else:
+                    reasons = "unknown reasons"
+                logger.info(f'{type_strain.parent_species} was assigned accesion {type_strain.genome_acc["accession"]}, but this record is flagged as atypical in GenBank for {reasons}. Redoing assignment')
                 type_strain.genome_acc['accession'] =''
                 missing_genome.append(type_strain)
             else:
@@ -369,7 +380,7 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
 
     df = pl.LazyFrame(data_list)
     if 'checkm_info' not in df.collect_schema().names():
-        df = df.with_columns(pl.struct({'checkm_species_tax_id': None, "completeness": None, "contamination": None}).alias('checkm_info'))
+        df = df.with_columns(checkm_info={'checkm_species_tax_id': None, "completeness": None, "contamination": None})
 
     df= df.select([pl.col('accession'), pl.col('organism').struct.field("*"), pl.col('assembly_info').struct.field(['assembly_level','biosample']), pl.col('checkm_info').struct.field('checkm_species_tax_id').alias('checkm_tax_id'), pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
     if 'strain' not in df.collect_schema().get('infraspecific_names').to_schema():
@@ -379,7 +390,7 @@ def retrieve_missing_genome_info(lpsn_types, api_key):
 
     df = df.with_columns(pl.col('infraspecific_names').struct.field("strain").alias('infraspecific_names'), pl.col('biosample').struct.field('strain').alias('biosample'))
     enum_type = pl.Enum(("Complete Genome", "Chromosome", "Scaffold", "Contig"))
-    df = df.with_columns(strain=pl.concat_list(pl.col('biosample'), pl.col('infraspecific_names')).list.unique()).unique().sort(pl.col('assembly_level').cast(enum_type), pl.col('checkm_completeness'), descending=[False, True]).collect().group_by('tax_id').all()
+    df = df.with_columns(strain=pl.concat_list(pl.col('biosample'), pl.col('infraspecific_names')).list.unique()).unique().sort(pl.col('assembly_level').cast(enum_type), pl.col('checkm_completeness'), descending=[False, True], nulls_last=True).collect().group_by('tax_id').all()
     for type_strain in tqdm.tqdm(missing_genome, desc="Processing missing genome info", unit="type strain", ncols=100, colour="magenta"):
         filtered = df.filter(pl.col('tax_id').is_in(type_strain.species_ncbi_tax_id)| pl.col("checkm_tax_id").list.set_intersection(type_strain.species_ncbi_tax_id).list.len() > 0)
         if len(filtered) > 0:
@@ -461,15 +472,15 @@ def retrieve_checkm_info(lpsn_types, api_key):
 
     df = pl.LazyFrame(data_list)
     if 'checkm_info' not in df.collect_schema().names():
-        df = df.with_columns(pl.struct({"completeness": '', "contamination": ''}).alias('checkm_info'))
-    df= df.select([pl.col('accession'), pl.col('organism').struct.field("*"), pl.col('assembly_info').struct.field(['assembly_level','biosample']), pl.col('checkm_info').struct.field('checkm_species_tax_id').alias('checkm_tax_id'), pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
+        df = df.with_columns(checkm_info={"completeness": '', "contamination": ''})
+    df= df.select([pl.col('accession'), pl.col('organism').struct.field("*"), pl.col('assembly_info').struct.field(['assembly_level','biosample']),  pl.col('checkm_info').struct.field('completeness').alias('checkm_completeness'), pl.col('checkm_info').struct.field('contamination').alias('checkm_contamination')])
 
     if 'infraspecific_names' not in df.collect_schema().names():
-        df = df.with_columns(pl.struct({"strain": pl.lit(None)}).alias('infraspecific_names'))
+        df = df.with_columns(infraspecific_names={"strain": pl.lit(None)})
     if 'strain' not in df.collect_schema().get('infraspecific_names').to_schema():
         df = df.with_columns(pl.col('infraspecific_names').struct.with_fields(strain=pl.lit(None)))
     if 'biosample' not in df.collect_schema().names():
-        df = df.with_columns(pl.struct({"strain": pl.lit(None)}).alias('biosample'))
+        df = df.with_columns(biosample={"strain": pl.lit(None)})
     if 'strain' not in df.collect_schema().get('biosample').to_schema():
         df = df.with_columns(pl.col('biosample').struct.with_fields(strain=pl.lit(None)))
 
@@ -478,12 +489,12 @@ def retrieve_checkm_info(lpsn_types, api_key):
 
     df= df.select([pl.col('accession'), pl.col('checkm_completeness'), pl.col('checkm_contamination'), pl.col('strain')])
     for type_strain in tqdm.tqdm(has_genome, desc="Processing checkm info", unit="type strain", ncols=100, colour="magenta"):
-        filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).fill_null(' ').collect()
+        filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).fill_null('').collect()
         if len(filtered) > 0:
             best_hit = filtered.rows(named=True)[0]
             best_hit_strain = best_hit.get("strain", [None])[0]
-            best_hit_completeness = best_hit.get("checkm_completeness", ' ') if best_hit.get("checkm_completeness") is not None else ' '
-            best_hit_contamination = best_hit.get("checkm_contamination", ' ') if best_hit.get("checkm_contamination") is not None else ' '
+            best_hit_completeness = best_hit.get("checkm_completeness", '') if best_hit.get("checkm_completeness") is not None else ''
+            best_hit_contamination = best_hit.get("checkm_contamination", '') if best_hit.get("checkm_contamination") is not None else ''
             # sort type_names so dsm, atcc, ntcc come first, and the best hit strain name is first if it is in the type names, then alphabetically
             if type_strain.type_names is not None:
                 custom_order = [best_hit_strain, "dsm", "atcc", "ntcc"]

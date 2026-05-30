@@ -18,7 +18,7 @@ Run ratatoskr as follows:
 
 ```
 ratatoskr run --input <name of taxa that should be retrieved> \
-              --output <path to generate output to> \
+              --output_path <path to generate output to> \
 ```
 
 ## Installation
@@ -69,7 +69,7 @@ pip install -e .
 To access the help menu use the `-h` option:
 
 ```
-Usage: ratatoskr.py [OPTIONS] COMMAND [ARGS]...
+Usage: ratatoskr [OPTIONS] COMMAND [ARGS]...
 
 Options:
   --version  -v  Show the version and exit.
@@ -127,7 +127,7 @@ Ratatoskr produces ouputs in three main folders:
 To retrieve sequences and metadata for taxonomic type strains belonging to the Lachnospiraceae: 
 
 ```
-ratatoskr run --input Lachnospiraceae --output output/Lachnospiraceae
+ratatoskr run --input Lachnospiraceae --output_path output/Lachnospiraceae
 ```
 
 ## Citation

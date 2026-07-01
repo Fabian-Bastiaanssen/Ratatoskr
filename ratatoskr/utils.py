@@ -18,21 +18,26 @@ class suppress_stdout:
         sys.stdout.close()
         sys.stdout = self._original
 
+
 def src_local(rel_path):
     return os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), rel_path))
+
 
 def get_version():
     with open(src_local("VERSION"), "r") as f:
         version = f.readline().strip()
     return version
 
+
 def make_dir(folder_path):
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
 
+
 def unzip_file(zip_path, extract_to):
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         zip_ref.extractall(extract_to)
+
 
 def move_and_rename(pattern, target_dir, label):
         for src in glob(str(pattern)):
@@ -43,6 +48,7 @@ def move_and_rename(pattern, target_dir, label):
                 shutil.move(str(src_path), str(dest))
             except Exception as e:
                 logger.warning(f"Failed to move {label} {src_path} -> {dest}: {e}")
+
 
 def get_credentials(email=True, password=True, api_key=False, api_being_accessed="LPSN", dev_mode=False):
 
@@ -80,6 +86,7 @@ def get_credentials(email=True, password=True, api_key=False, api_being_accessed
             api_key = getpass.getpass(f"{api_being_accessed} API Key: ")
     return email, password, api_key
 
+
 def run_supbrocess(command: list, suppress_output: bool = True) -> int:
 
     if suppress_output:
@@ -89,6 +96,7 @@ def run_supbrocess(command: list, suppress_output: bool = True) -> int:
         result = subprocess.run(command)
     
     return result.returncode
+
 
 def delete_thing(path: str) -> None:
     p = Path(path)

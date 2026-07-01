@@ -1,10 +1,22 @@
+from glob import glob
+
 from loguru import logger
 import asyncio
 import aiohttp
 
+
 from ratatoskr.utils import make_dir, move_and_rename, delete_thing
 
-def tidy_genome_dir(output_path, input_taxon):
+def tidy_16S_dir(output_path):
+    base = output_path / "sequences" / "16S"
+
+    db_files = [ x for x in base.glob("*.db.*") if x.is_file() ]
+    tmp_files = [ x for x in base.glob("tmp_*") if x.is_file() ]
+        
+    for i in db_files + tmp_files + [base / "16S_mmseqs_hits.tmp"]:
+        delete_thing(i)
+
+def tidy_genome_dir(output_path):
     base = output_path / "sequences" / "genomes"
     fastas_dir = base / "fastas"
     genbanks_dir = base / "genbank"
@@ -16,10 +28,10 @@ def tidy_genome_dir(output_path, input_taxon):
 
     move_and_rename(data_root / "*" / "*.fna", fastas_dir, "fasta")
     move_and_rename(data_root / "*" / "*.gbff", genbanks_dir, "genbank")
-    
 
     for i in [base / "ncbi_dataset", base / "genomes.zip", base / "README.md", base / "md5sum.txt", output_path / "genome_accessions.txt"]:
         delete_thing(i)
+
 
 async def fetch_data(url, session, headers, sem, mode, pbar=None, query_length=1):
     results = []
@@ -89,3 +101,5 @@ def get_taxaomic_levels(input):
         taxonomic_level = "genus"
 
     return taxonomic_level
+
+

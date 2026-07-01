@@ -17,14 +17,36 @@ taxonomic_attrs = [
         "species_ncbi_tax_id", "strain_ncbi_tax_id"
     ]
 
+
 def get_genomic_data(type_strain, type_name):
     values = [type_name]
     for a in genomic_attrs:
-        if a == "genome_acc":
+        if a == "rRNA_acc":
+            rRNA_info = getattr(type_strain, "rRNA_info") or {}
+            values.append(
+                    f"{type_strain.rRNA_acc if type_strain.rRNA_acc is not None else ''}\t"
+                    f"{rRNA_info.get('source','') if rRNA_info.get('source') is not None else ''}\t"
+                    f"{rRNA_info.get('98.7%_match','') if rRNA_info.get('98.7%_match') is not None else ''}\t"
+                    f"{rRNA_info.get('95%_match','') if rRNA_info.get('95%_match') is not None else ''}\t"
+                    f"{rRNA_info.get('note','') if rRNA_info.get('note') is not None else ''}"
+                )
+        elif a == "genome_acc":
             bg = getattr(type_strain, a) or {}
-            values.append(f"{bg.get('accession','')}\t{bg.get('assembly level','')}\t{bg.get('checkm_completeness','')}\t{bg.get('checkm_contamination','')}")
-        else:
-            values.append(getattr(type_strain, a) or "")
+            values.append(
+                    f"{bg.get('accession','') if bg.get('accession') is not None else ''}\t"
+                    f"{bg.get('assembly level','') if bg.get('assembly level') is not None else ''}\t"
+                    f"{bg.get('checkm_completeness','') if bg.get('checkm_completeness') is not None else ''}\t"
+                    f"{bg.get('checkm_contamination','') if bg.get('checkm_contamination') is not None else ''}\t"
+                    f"{bg.get('ncbis_species_match_assembly','') if bg.get('ncbis_species_match_assembly') is not None else ''}\t"
+                    f"{bg.get('ncbis_species_match_name','') if bg.get('ncbis_species_match_name') is not None else ''}\t"
+                    f"{bg.get('ncbis_species_match_ani','') if bg.get('ncbis_species_match_ani') is not None else ''}\t"
+                    f"{bg.get('ncbis_species_match_coverage','') if bg.get('ncbis_species_match_coverage') is not None else ''}\t"
+                    f"{bg.get('ncbis_best_match_assembly','') if bg.get('ncbis_best_match_assembly') is not None else ''}\t"
+                    f"{bg.get('ncbis_best_match_name','') if bg.get('ncbis_best_match_name') is not None else ''}\t"
+                    f"{bg.get('ncbis_best_match_ani','') if bg.get('ncbis_best_match_ani') is not None else ''}\t"
+                    f"{bg.get('ncbis_best_match_coverage','') if bg.get('ncbis_best_match_coverage') is not None else ''}"
+                )
+
     return "\t".join(values)
 
 
@@ -47,6 +69,7 @@ def write_tsv(data, output_file):
     with open(output_file, "w") as f:
         for row in data:
             f.write(row + "\n")
+
 
 def format_colony_morph_dict(d):
     sections = []
@@ -247,15 +270,36 @@ def output_general_characteristics(lpsn_types, output_path):
 
 def output_sequence_metadata(lpsn_types, output_path):
     make_dir( output_path / "sequences" )
-    genomic_tsv = ["\t".join(["Name", "rRNA_accession", "Genome_accession", "Assembly_level", "CheckM_completeness", "CheckM_contamination"])]
+    genomic_tsv = ["\t".join(["Name", 
+                              "rRNA_accession", 
+                              "rRNA_source",
+                              "rRNA_98.7%_match_status",
+                              "rRNA_95%_match_status",
+                              "rRNA_note",
+                              "Genome_accession",
+                              "Assembly_level", 
+                              "CheckM_completeness", 
+                              "CheckM_contamination",
+                              "NCBIs_species_match_accession",
+                              "NCBIs_species_match_name",
+                              "NCBIs_species_match_ANI",
+                              "NCBIs_species_match_assembly_coverage",
+                              "NCBIs_best_match_accession",
+                              "NCBIs_best_match_name",
+                              "NCBIs_best_match_ANI",
+                              "NCBIs_best_match_assembly_coverage",])]
+    
     
     for ts in lpsn_types:
         type_name = " ".join([ts.parent_subspecies, ts.type_names[0]] if ts.parent_subspecies is not None else [ts.parent_species, ts.type_names[0]])
         genomic_tsv.append(get_genomic_data(ts, type_name))
-    
+
     write_tsv(genomic_tsv, output_path / "sequences" / "sequence_metadata.tsv")
 
+
 def output_metadata(lpsn_types, output_path):
+
+    lpsn_types = sorted(lpsn_types, key=lambda x: (x.parent_species or "", x.parent_subspecies or ""))
 
     make_dir( output_path / "characteristics" )
     make_dir( output_path / "taxonomy" )

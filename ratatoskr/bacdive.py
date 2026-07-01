@@ -12,6 +12,7 @@ import traceback
 
 from ratatoskr.utils import suppress_stdout
 
+
 assembly_levels = ("complete", "chromosome", "scaffold", "contig")
 
 type_strain_attributes = ["genome_acc", "isolation_sample_type", "culture_pH", "culture_temp", 
@@ -19,6 +20,7 @@ type_strain_attributes = ["genome_acc", "isolation_sample_type", "culture_pH", "
  "morphology_colony", "API_results", "fatty_acid_profile", 
  "oxygen_tolerance", "spore_formation", "compound_production", 
  "metabolite_production", "metabolite_utilization"]
+
 
 def set_bacdive_client(email, password):
     """
@@ -46,6 +48,7 @@ def split_lpsn_types_list_to_genus_dict(lpsn_types):
             genus_dict[genus] = []
         genus_dict[genus].append(type_strain)
     return genus_dict
+
 
 def get_sample_isolation_info(record):
     
@@ -89,6 +92,7 @@ def get_ncbi_tax_id(record):
     else:
         return None
 
+
 def get_16S_sequence_info(record):
 
     rRNA_info = record.get("Sequence information", {}).get("16S sequences")
@@ -111,15 +115,19 @@ def get_16S_sequence_info(record):
 
     return rRNA_acc
 
+
 def get_genome_sequence_info(record):
 
+    # print(record)
+    # if "Zoogloea ramigera" in record.get("General").get("description", ""):
+    #     print(record)
     genome_info = record.get("Sequence information", {}).get("Genome sequences")
     
     if genome_info is not None:
         if type(genome_info) is list:
             genome_list = [{"accession": x.get("accession"), "assembly level": x.get("assembly level")} for x in genome_info if x.get("database") == "ncbi" and x.get("assembly level") in assembly_levels]
             if len(genome_list) > 0:
-                genome_list = sorted(genome_list, key=lambda x: assembly_levels.index(x.get("assembly level")))
+                genome_list = sorted(genome_list, key=lambda x: (assembly_levels.index(x.get("assembly level")), x.get("accession")))
                 genome_acc = genome_list[0]
             else:
                 genome_acc = None
@@ -276,6 +284,7 @@ def get_morphology_pigmentation(record):
 
     return pigmentation_val
 
+
 def get_morphology_cell(record):
 
     cell_morphology = record.get('Morphology', {}).get('cell morphology')
@@ -318,6 +327,7 @@ def get_morphology_cell(record):
     }    
 
     return cell_morphology_val
+
 
 def get_morphology_colony(record):
 
@@ -362,6 +372,7 @@ def get_morphology_colony(record):
 
     return possible_morphs
 
+
 def get_API_results(record): 
 
     phenotype = record.get('Physiology and metabolism', {})
@@ -389,6 +400,7 @@ def get_API_results(record):
         return None
 
     return API_results
+
 
 def get_fatty_acid_profile(record):
     
@@ -424,6 +436,7 @@ def get_fatty_acid_profile(record):
     
     return fatty_acid_profile_results
 
+
 def get_oxygen_tolerance(record):
     oxygen_tolerance = record.get('Physiology and metabolism', {}).get('oxygen tolerance')
 
@@ -449,6 +462,7 @@ def get_oxygen_tolerance(record):
         oxygen_tolerance_result = ';'.join(oxygen_tolerance_result)
 
     return oxygen_tolerance_result
+
 
 def get_spore_formation(record):
 
@@ -477,6 +491,7 @@ def get_spore_formation(record):
         
     return spore_formation_result
 
+
 def get_compound_production(record):
 
     compound_production = record.get('Physiology and metabolism', {}).get('compound production', {})
@@ -502,6 +517,7 @@ def get_compound_production(record):
     else:
         compound_production_result = ';'.join(compound_production_result)
     return compound_production_result
+
 
 def get_metabolite_production(record):
 
@@ -535,6 +551,7 @@ def get_metabolite_production(record):
             metabolite_production_result[k] = ';'.join(metabolite_production_result[k])
     
     return metabolite_production_result
+
 
 def get_metabolite_utilization(record):
 
@@ -650,6 +667,7 @@ async def fetch_genus_data(genus, type_strains, bacdive_client, pbar):
                     type_strain.type_names = list(set(type_strain.type_names) | set(record["type_names"]))
                     if type_strain.rRNA_acc is None and record.get("16S_rRNA") is not None:
                         type_strain.rRNA_acc = record.get("16S_rRNA").get("accession")
+                        type_strain.rRNA_info = {'source': "BacDive", '98.5%_match': None, '95%_match': None, 'note': '16S rRNA sequence listed in BacDive record for type.'}
                     if record.get('ncbi_tax_id') is not None:
                         type_strain.species_ncbi_tax_id = [x[0] for x in record.get("ncbi_tax_id") if x[1].lower() == "species"]
                         type_strain.strain_ncbi_tax_id = [x[0] for x in record.get("ncbi_tax_id") if x[1].lower() == "strain"]
@@ -678,7 +696,6 @@ async def gather_all_genera(bacdive_client, type_strain_dict):
     await bacdive_client.close()
     pbar.close()
     return results
-
 
 
 def get_genus_type_strains(bacdive_client, type_strain_dict):

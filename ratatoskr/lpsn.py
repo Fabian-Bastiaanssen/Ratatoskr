@@ -15,6 +15,8 @@ from ratatoskr.utils import suppress_stdout
 from ratatoskr.misc import get_taxaomic_levels
 from ratatoskr.type_strain import TypeStrain
 from ratatoskr.genbank import get_acc_seq_lengths
+
+
 accepted_ranks = [
     "domain",
     "kingdom",
@@ -253,6 +255,8 @@ def check_lpsn_rRNA_accs(lpsn_hits, dev_mode, no_cache, cache=None, api_key=None
             if hit.rRNA_acc.split(".")[0] not in good_lengths:
                 logger.debug(f"rRNA accession {hit.rRNA_acc} for {hit.parent_species} type strain {hit.type_names[0]} is shorter than 1000 bp or longer than 2000 bp, which may indicate an issue with the sequence. Removing.")
                 hit.rRNA_acc = None
+            else:
+                hit.rRNA_info = {'source': "LPSN", '98.5%_match': None, '95%_match': None, 'note': '16S rRNA sequence listed in LPSN record for type'}
         updated_hits.append(hit)
 
     if dev_mode and cache is not None:

@@ -35,7 +35,8 @@ class TypeStrain:
 
     binomial_synonyms: list = None
     lpsn_id:           Optional[str] = None
-    rRNA_acc:           Optional[str] = None 
+    rRNA_acc:           Optional[str] = None
+    rRNA_info:          Optional[str] = None
     list_ref:          Optional[str] = None
     pub_ref:           Optional[int] = None
     type_names:        list = None
@@ -130,6 +131,7 @@ class TypeStrain:
             f"subspecies={self.parent_subspecies!r}, "
             f"subspecies_id={self.parent_subspecies_id!r}, "
             f"rRNA_acc={self.rRNA_acc!r}, "
+            f"rRNA_info={self.rRNA_info!r}, "
             f"list_ref={self.list_ref!r}, "
             f"pub_ref={self.pub_ref!r}, "
             f"type_names={self.type_names!r}, "

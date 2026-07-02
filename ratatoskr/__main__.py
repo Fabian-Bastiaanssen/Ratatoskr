@@ -8,7 +8,7 @@ from pathlib import Path
 import rich_click as click
 
 from ratatoskr.utils import get_version
-from ratatoskr.initialisation import set_up_logger, initialise_clients
+from ratatoskr.initialisation import set_up_logger, initialise_clients, fetch_SILVA_seqs
 from ratatoskr.lpsn import retrieve_LPSN_type_info
 from ratatoskr.genbank import retrieve_info_from_genbank, retrieve_sequences_workflow, get_genbank_api_info
 from ratatoskr.bacdive import retrieve_extra_info_from_bacdive
@@ -55,7 +55,6 @@ def main_cli():
 @click.option(
         "-o",
         "--output_path",
-        "--output",
         help="Specify the desired path for creation of the output folder",
         required=True,
         type=click.Path(exists=False, dir_okay=True, readable=True, path_type=Path)
@@ -95,12 +94,22 @@ def main_cli():
     )
 @click.option(
         "-s",
-        "--skip_download",
-        help="Skip all or specific sequence download steps.",
-        type=click.Choice(['all', '16s', 'genomes', 'none'], case_sensitive=False),
+        "--sequence_download",
+        help="Specify the sequence type to download. All choices still return accessions, selection is to download associated FASTA files.",
+        type=click.Choice(['all', '16S', 'genomes', 'none'], case_sensitive=False),
         callback=lambda ctx, param, value: value.lower(),
         show_default = True,
-        default = 'none',
+        default = 'all',
+        required=False
+    )
+@click.option(
+        "-m",
+        "--mmseqs_16S_check",
+        help="Specify whether to check 16S rRNA sequences with mmseqs against SILVA for either all sequences or only those from GenBank ('all' can be time-consuming step for higher taxonomic levels)",
+        type=click.Choice(['all', 'genbank'], case_sensitive=False),
+        callback=lambda ctx, param, value: value.lower(),
+        show_default = True,
+        default = 'all',
         required=False
     )
 @click.option(
@@ -126,21 +135,21 @@ def main_cli():
 @click.help_option("--help", "-h")
 @click.pass_context
 
-def run(ctx, input, output_path, threads, force, level, dev_mode, skip_download, no_cache, cache): 
+def run(ctx, input, output_path, threads, force, level, dev_mode, sequence_download, no_cache, cache, mmseqs_16s_check): 
 
     """
     Run the ratatoskr pipeline
     """
 
     set_up_logger(output_path, force, debug=dev_mode)
+    if sequence_download == '16s' or sequence_download == 'all':
+        fetch_SILVA_seqs(threads)
     email, api_key = get_genbank_api_info(dev_mode) 
     lpsn_client, bacdive_client = initialise_clients(dev_mode)
     lpsn_types = retrieve_LPSN_type_info(input, output_path, threads, level, lpsn_client, dev_mode, no_cache, cache, api_key=api_key, email=email)
     lpsn_types = retrieve_extra_info_from_bacdive(lpsn_types, bacdive_client)
-    lpsn_types = retrieve_info_from_genbank(lpsn_types, output_path, threads, dev_mode, input, skip_download, email=email, api_key=api_key)
-    retrieve_sequences_workflow(lpsn_types, output_path, threads, dev_mode, input, skip_download)
-
-
+    lpsn_types = retrieve_info_from_genbank(lpsn_types, output_path, threads, dev_mode, input, sequence_download, email=email, api_key=api_key, mmseqs_16s_check=mmseqs_16s_check)
+    
 ####################################################################################################
 
 

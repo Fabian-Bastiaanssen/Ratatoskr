@@ -1,12 +1,18 @@
-import shutil 
+from datetime import datetime
+from importlib import resources
+import os
+import requests
+import gzip, shutil 
+import subprocess
 import sys
+
 from loguru import logger
 from tqdm import tqdm
 from pathlib import Path
+
 from ratatoskr.utils import get_credentials, make_dir, get_version
 from ratatoskr.lpsn import set_lpsn_client
 from ratatoskr.bacdive import set_bacdive_client
-from datetime import datetime
 
 def set_logger_format(debug: bool = False) -> str:
     """
@@ -91,6 +97,65 @@ def initialise_clients(dev_mode=False):
     return lpsn_client, bacdive_client
 
 
+def create_blast_db(fasta_path: Path) -> None:
+ 
+    logger.info(f"Creating SILVA BLASTn database")
+    
+    command = [
+        "makeblastdb",
+        "-in", str(fasta_path),
+        "-dbtype", "nucl",
+    ]
+    
+    subprocess.run(command, check=True)
+
+def create_mmseqs_db(input_path, output_path, threads):
+    db_cmd = [
+        "mmseqs",
+        "createdb",
+        "--threads", str(threads),
+        "-v", "1",
+        str(input_path),
+        str(output_path)
+    ]
+    subprocess.run(db_cmd, check=True)  
+    
+
+def fetch_SILVA_seqs(threads):
+    url = "https://www.arb-silva.de/fileadmin/silva_databases/current/Exports/SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz"
+    gzip_path = resources.files("ratatoskr.data").joinpath("SILVA_138.2_SSURef_NR99_tax_silva.fasta.gz")
+    out_path = resources.files("ratatoskr.data").joinpath("SILVA_138.2_SSURef_NR99_tax_silva.fasta")
+    logger.debug(f"Expected SILVA output path: {out_path}")
+
+
+    if not out_path.exists():
+        logger.info(f"Downloading SILVA sequences from {url}")
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        total_size = int(response.headers.get("content-length", 0))
+        with open(gzip_path, "wb") as f, tqdm(
+            total=total_size if total_size > 0 else None,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc="Downloading SILVA",
+            ncols=100, colour="magenta"
+        ) as pbar:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+        logger.info(f"Decompressing {gzip_path} to {out_path}")
+        with gzip.open(gzip_path, "rb") as f_in, open(out_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        gzip_path.unlink()
+        # create_blast_db(out_path)
+        create_mmseqs_db(out_path, out_path.with_suffix(".mmseqs"), threads)
+    else:
+        logger.info(f"SILVA sequences already exist, skipping download")
+    
+
+
 def set_up_logger(output_path: Path, force: bool, debug: bool = False) -> None:
     """
     Set up the complete logging system for ratatoskr.
@@ -108,7 +173,7 @@ def set_up_logger(output_path: Path, force: bool, debug: bool = False) -> None:
     create_log_file(output_path, logger_format)
     
     logger.info("###################################")
-    logger.info("#####    Ratatoskr v" + get_version() + "     #####")
+    logger.info("#####    Ratatoskr v" + get_version() + "    #####")
     logger.info("###################################\n")
     # provide current date, time and version info in log header for better tracking and reproducibility
     logger.info(f"Ran on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}, with ratatoskr version {get_version()}")

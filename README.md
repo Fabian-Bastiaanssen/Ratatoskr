@@ -52,6 +52,7 @@ If installing from source, Ratatoskr requires the following dependencies to also
 #### Required dependencies
 
 - [ncbi datasets](https://github.com/ncbi/datasets)
+- [MMSeqs2] (https://github.com/soedinglab/mmseqs2)
 
 To install from source:
 
@@ -89,18 +90,24 @@ Usage: ratatoskr run [OPTIONS]
     Run the ratatoskr pipeline.
 
 Options:
-  --input           -i  TEXT                                Name of the taxa of interest. [required]
-  --output_path     -o  PATH                                Specify the desired path for creation of the output folder [required]
-  --level           -l  [domain|kingdom|phylum|class|       Specify the taxanomic level to check for your taxon. [default: auto]
-                          order|family|genus|species|auto]  
-  --threads         -t  INTEGER RANGE [x>=1]                Number of threads to be used (only impacts downloading). [default: 1]
-  --force           -f                                      Force overwrite of output directory.
-  --dev_mode        -d                                      Run in development mode.
-  --skip_download   -s  [all|16s|genomes]                   Skip all or specific sequence download steps.
-  --no_cache        -n                                      Don't use 16S rRNA cache information.
-  --cache           -c  TEXT                                FOR DEV MODE ONLY: Path to create new cache file.
-  --version         -v                                      Show the version and exit.
-  --help            -h                                      Show this message and exit.       
+  --input             -i  TEXT                                Name of the taxa of interest. [required]
+  --output_path       -o  PATH                                Specify the desired path for creation of the output folder [required]
+  --level             -l  [domain|kingdom|phylum|class|       Specify the taxanomic level to check for your taxon. [default: auto]
+                            order|family|genus|species|auto]  
+  --threads           -t  INTEGER RANGE [x>=1]                Number of threads to be used (only impacts downloading). [default: 1]
+  --force             -f                                      Force overwrite of output directory.
+  --dev_mode          -d                                      Run in development mode.
+  --sequence_download -s  [all|16s|genomes|none]              Specify the sequence type to download. All choices still return 
+                                                              accessions, selection is to download associated FASTA files. 
+                                                              [default: all] 
+  --mmseqs_16S_check  -m  [all|genbank]                       Specify whether to check 16S rRNA sequences with mmseqs against SILVA 
+                                                              for either all sequences or only those from GenBank ('all' 
+                                                              can be time-consuming step for higher taxonomic levels) 
+                                                              [default: all]                                                            
+  --no_cache          -n                                      Don't use 16S rRNA cache information.
+  --cache             -c  TEXT                                FOR DEV MODE ONLY: Path to create new cache file.
+  --version           -v                                      Show the version and exit.
+  --help              -h                                      Show this message and exit.       
 ```
 
 ### Outputs
@@ -140,6 +147,6 @@ bioRxiv., 2026.01.26.700362; 2026; doi: https://doi.org/10.64898/2026.01.26.7003
 
 Please also cite the APIs for [LPSN](https://github.com/LeibnizDSMZ/lpsn-api), [BacDive](https://github.com/JKoblitz/bacdive-api), and [NCBI datasets](https://github.com/ncbi/datasets) as Ratatoskr usefulness is in no small part due to these, for instance:
 
-> ... type strain sequences and metadata were downloaded using Ratatoskr (Turkington, 2026), which accesses the LPSN (Freese, 2025), BacDive (Schober, 2025), and NCBI Datasets (O’Leary, 2026) API’s to retrieve up-to-date nomenclature type strains and their sequence data
+> ... type strain sequences and metadata were downloaded using Ratatoskr (Turkington et al., 2026), which accesses the LPSN (Freese et al., 2025), BacDive (Schober, 2025), and NCBI Datasets (O’Leary et al., 2026) API’s to retrieve up-to-date nomenclature type strains and their sequence data.
 
 N.B. the citations in the example above are those recommended for citation at time of writing and may since have been updated. Please check with each API for the current recommended citation. 

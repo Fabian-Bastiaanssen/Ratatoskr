@@ -55,6 +55,7 @@ def main_cli():
 @click.option(
         "-o",
         "--output_path",
+        "--output",
         help="Specify the desired path for creation of the output folder",
         required=True,
         type=click.Path(exists=False, dir_okay=True, readable=True, path_type=Path)

@@ -1,0 +1,3 @@
+ratatoskr/__pycache__/*.pyc
+ratatoskr/data/*
+ratatoskr.egg-info/*

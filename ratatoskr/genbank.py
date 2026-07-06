@@ -13,8 +13,8 @@ import aiohttp
 from Bio import Entrez, SeqIO
 from loguru import logger
 import tqdm
-os.environ["POLARS_MAX_THREADS"] = "1"
 import polars as pl
+
 
 from ratatoskr.misc import get_haves_and_have_nots, fetch_data, tidy_genome_dir, tidy_16S_dir
 from ratatoskr.utils import get_credentials, unzip_file, make_dir, move_and_rename, delete_thing
@@ -124,10 +124,12 @@ def retrieve_ncbi_taxon_ids(lpsn_types, api_key):
 async def search_16s(batch, email, api_key, pbar, rate_limiter, db_to_search):
     max_retries = 5
     batch_df = pl.DataFrame([{
+        "strain_names": [type_strain.type_names] if isinstance(type_strain.type_names, str) else type_strain.type_names,
         "ncbi_tax_id": type_strain.strain_ncbi_tax_id + type_strain.species_ncbi_tax_id, 
         "parent_species_id": type_strain.parent_species_id, 
         "parent_subspecies_id": type_strain.parent_subspecies_id} for type_strain in batch], 
-                schema={"ncbi_tax_id": pl.List(pl.String), 
+                schema={"strain_names": pl.List(pl.String), 
+                        "ncbi_tax_id": pl.List(pl.String), 
                         "parent_species_id": pl.Int64, 
                         "parent_subspecies_id": pl.Int64}
     ).lazy().explode(["ncbi_tax_id"])
@@ -163,13 +165,15 @@ async def search_16s(batch, email, api_key, pbar, rate_limiter, db_to_search):
                     pbar.update(len(batch))
                     return {"hits": have_rRNA, "misses" : batch}
                 await asyncio.sleep(2 ** attempt)
+
         records_df = (
             pl.LazyFrame(
                 {'Length': int(x.get("Length")), 
                 'Status': x.get("Status"), 
                 'AccessionVersion': x.get("AccessionVersion"), 
                 'CreateDate': x.get("CreateDate"), 
-                'TaxId': str(int(x.get("TaxId")))} 
+                'TaxId': str(int(x.get("TaxId"))),
+                'Title': x.get("Title")}
                 for x in records).filter(
                     (pl.col("Length") >= 750) &
                     (pl.col("Length") <= 2500) & 
@@ -177,12 +181,26 @@ async def search_16s(batch, email, api_key, pbar, rate_limiter, db_to_search):
                     (pl.col("AccessionVersion").str.len_chars() < 12)
                 )
             )
+
         batch_df = (
-            batch_df.join(
+            batch_df.with_columns(
+                strain_names = pl.col("strain_names").list.concat(
+                    pl.col("strain_names").list.eval(
+                        pl.element().str.replace_all(" ", "-", literal=True)
+                    )
+                ).list.concat(
+                    pl.col("strain_names").list.eval(
+                        pl.element().str.replace_all(" ", "_", literal=True)
+                    ))
+            ).with_columns(
+               strain_names = pl.col("strain_names").list.eval(pl.element().map_elements(lambda x: f" {x} ", return_dtype=pl.String))
+            ).join(
                 records_df.select(pl.col("TaxId").alias("ncbi_tax_id"), 
-                                  pl.col("AccessionVersion"), pl.col("CreateDate")), 
+                                  pl.col("AccessionVersion"), pl.col("CreateDate"), pl.col("Title")), 
                                   on="ncbi_tax_id", 
                                   how="left"
+                ).filter(
+                    pl.col("Title").str.extract_many(pl.col("strain_names")).list.len() > 0
                 ).sort(
                     "CreateDate", 
                     descending=False
@@ -320,56 +338,14 @@ def batch_missing_rrna(missing_rRNA, max_ids=80):
     return batches
 
 
-# def fetch_16s_sequences_for_blast_confirmation(lpsn_types, email, api_key, output_path):
-
-#     retmax = 10**6
-
-#     accessions = [x.rRNA_acc.split(".")[0] for x in lpsn_types if x.rRNA_acc is not None]
-#     giList = asyncio.run(grouped_retrieve_16S(accessions, max_terms=100, email=email, api_key=api_key))
-#     if len(giList) == 0:
-#         logger.warning(f"No 16S rRNA gene sequences found. Continuing without 16S sequences.")
-#         search_results = None
-    
-#     if len(giList) > 0:
-#         logger.info(f"Found {len(giList)} 16S rRNA gene sequences to retrieve from GenBank.")
-#         try:
-#             search_handle = Entrez.epost(db="nucleotide", id=",".join(giList), email=email, api_key=api_key)
-#             search_results = Entrez.read(search_handle)
-#             webenv, query_key = search_results["WebEnv"], search_results["QueryKey"] 
-#         except Exception as e:
-#             logger.error(f"Error posting search results: {e}")
-#             sys.exit(1)
-
-#     if search_results is not None:
-        
-#         found_accs = []
-        
-#         with open( output_path / "tmp_16S.fasta", "w" ) as f:
-#             for start in tqdm.tqdm(range(0, len(giList), 100), desc="Downloading blocks of 16S sequences", unit="batch", ncols=100, colour="magenta"):
-#                 handle = Entrez.efetch(db='nucleotide', rettype="fasta", retmode='text', retstart = start, retmax=100, webenv= webenv, query_key= query_key, email=email, api_key=api_key)
-#                 sequence = handle.read()
-#                 data = sequence.replace("\n\n", "\n")
-#                 f.write(data)
-
-#                 found_accs += [line.strip()[1:].split(".")[0]  for line in sequence.splitlines() if line.strip().startswith('>')]
-
-#         found = [x for x in lpsn_types if x.rRNA_acc.split(".")[0] in found_accs]
-#         not_found = [x for x in lpsn_types if x.rRNA_acc.split(".")[0] not in found_accs]
-
-#     else:
-#         found = []
-#         not_found = lpsn_types
-        
-#     return found, not_found
-
-def run_blast_against_SILVA(fasta_file, output_path, threads):
+def run_mmseqs_against_SILVA(fasta_file, output_path, threads):
     type_sequences_db_path = output_path / "sequences" / "16S" / "tmp_16S_mmseqs_db"
     create_mmseqs_db(fasta_file, type_sequences_db_path, threads)
     SILVA_db_path = resources.files("ratatoskr.data").joinpath("SILVA_138.2_SSURef_NR99_tax_silva.mmseqs")
     mmseqs_out_db = output_path / "sequences" / "16S" / "16S_mmseqs_hits.db"
     mmseqs_out_tmp = output_path / "sequences" / "16S" / "16S_mmseqs_hits.tmp"
     mmseqs_out_result = output_path / "sequences" / "16S" / "16S_mmseqs_hits.tsv"
-    blast_cmd = [
+    mmseqs_cmd = [
         "mmseqs",
         "search",
         str(type_sequences_db_path),
@@ -382,7 +358,7 @@ def run_blast_against_SILVA(fasta_file, output_path, threads):
         "--threads", str(threads),
         "-s", "7.5"
     ]
-    subprocess.run(blast_cmd, check=True)
+    subprocess.run(mmseqs_cmd, check=True)
 
     convert_cmd = [
         "mmseqs",
@@ -411,17 +387,17 @@ def create_mmseqs_db(input_fasta, db_out_path, threads):
     
 
 
-def process_blast_results(lpsn_types, output_path, mmseqs_16S_check):
-    blast_output_file = output_path / "sequences" / "16S" / "16S_mmseqs_hits.tsv"
-    
+def process_mmseqs_results(lpsn_types, output_path, mmseqs_16S_check):
+    mmseqs_output_file = output_path / "sequences" / "16S" / "16S_mmseqs_hits.tsv"
+
     if mmseqs_16S_check == "all":
         search_sources = ["GenBank", "RefSeq", "LPSN", "BacDive"]
     elif mmseqs_16S_check == "genbank":
         search_sources = ["GenBank"]
 
-    
-    blast_results = (
-        pl.read_csv(blast_output_file, 
+
+    mmseqs_results = (
+        pl.read_csv(mmseqs_output_file, 
                     separator="\t", 
                     has_header=False, 
                     schema = {"qseqid": pl.Utf8, 
@@ -491,7 +467,7 @@ def process_blast_results(lpsn_types, output_path, mmseqs_16S_check):
             "source": type_strain.rRNA_info.get("source", None) if type_strain.rRNA_info is not None else None
                 } for type_strain in lpsn_types if type_strain.rRNA_acc is not None],
         ).lazy().join(
-            blast_results, 
+            mmseqs_results, 
             left_on="rRNA_acc", 
             right_on="qseqid", 
             how="left"
@@ -531,12 +507,12 @@ def process_blast_results(lpsn_types, output_path, mmseqs_16S_check):
                 (pl.col("result_98point7") == "No taxa match at ≥ 98.7% identity") & 
                 (pl.col("result_95") == "No taxa match at 95-98.7% identity")
             ).then(
-                pl.lit("Warning: Sequence not from a curated source nor could be validated by BLASTn vs SILVA")
+                pl.lit("Warning: Sequence not from a curated source nor could be validated by MMSeqs2 vs SILVA")
             ).when(
                 (pl.col("result_98point7") == "No hits") & 
                 (pl.col("result_95") == "No hits")
             ).then(
-                pl.lit("Warning: No BLASTn hit vs SILVA with ID ≥ 95%")
+                pl.lit("Warning: No MMSeqs2 hit vs SILVA with ID ≥ 95%")
             )
             .otherwise(
                 pl.lit(None)
@@ -586,22 +562,26 @@ def get_tmp_genbank_16S_fasta(fasta, tmp_fasta, type_hit_list):
 
     
 
-def confirm_genbank_16S_hits_with_blast(type_hit_list, output_path, threads, mmseqs_16S_check):
+def confirm_genbank_16S_hits_with_mmseqs(type_hit_list, output_path, threads, mmseqs_16S_check):
 
-    logger.info(f"Running BLASTn vs SILVA on {mmseqs_16S_check} 16S rRNAs.")
+    if mmseqs_16S_check == "none":
+        logger.info("Skipping MMSeqs2 vs SILVA check for 16S rRNAs.")
+        return type_hit_list
+    
+    logger.info(f"Running MMSeqs2 vs SILVA on {mmseqs_16S_check} 16S rRNAs.")
 
     default_fasta = output_path / "sequences" / "16S" / "16S.fasta"
 
     if mmseqs_16S_check == "all":
         if len([x for x in type_hit_list if x.rRNA_acc is not None]) > 0:
-            run_blast_against_SILVA(default_fasta, output_path, threads)
-            type_hit_list = process_blast_results(type_hit_list, output_path, mmseqs_16S_check)
+            run_mmseqs_against_SILVA(default_fasta, output_path, threads)
+            type_hit_list = process_mmseqs_results(type_hit_list, output_path, mmseqs_16S_check)
     if mmseqs_16S_check == "genbank":
         if len([x for x in type_hit_list if x.rRNA_info and (x.rRNA_info.get("source", None) == "GenBank")]) > 0:
             tmp_fasta = output_path / "sequences" / "16S" / "tmp_genbank_16S.fasta"
             get_tmp_genbank_16S_fasta(default_fasta, tmp_fasta, type_hit_list)
-            run_blast_against_SILVA(tmp_fasta, output_path, threads)
-            type_hit_list = process_blast_results(type_hit_list, output_path, mmseqs_16S_check)
+            run_mmseqs_against_SILVA(tmp_fasta, output_path, threads)
+            type_hit_list = process_mmseqs_results(type_hit_list, output_path, mmseqs_16S_check)
     return type_hit_list
 
 
@@ -671,21 +651,37 @@ def retrieve_missing_16S_info(lpsn_types, email, api_key, output_path):
     return has_rRNA + refSeq_rRNA + genbank_rRNA + still_missing
 
 
-async def request_ncbi_genomes(query_terms, api_key, pbar):
+async def request_ncbi_genomes(query_terms, api_key, pbar, strain_names):
     headers = {
         "accept": "application/json",
         "api-key": api_key
     }
     logger.debug(f"Requesting genome information for {len(query_terms)} taxon IDs from GenBank.")
-    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60000),connector=aiohttp.TCPConnector(limit=9))
+    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60000), connector=aiohttp.TCPConnector(limit=9))
     sem = asyncio.Semaphore(9)
-    urls = [f"https://api.ncbi.nlm.nih.gov/datasets/v2/genome/taxon/{"%2C".join(subset).replace(" ", "%20")}/dataset_report?returned_content=COMPLETE&page_size=1000" for subset in [query_terms[i:i + 100] for i in range(0, len(query_terms), 100)]]
-    query_lengths = [len(subset) for subset in [query_terms[i:i + 100] for i in range(0, len(query_terms), 100)]]
-    parrallel_tasks = [fetch_data(url, session, headers, sem, 'reports', pbar, query_length) for url, query_length in zip(urls, query_lengths)]
+
+    chunks = [query_terms[i:i + 100] for i in range(0, len(query_terms), 100)]
+    urls = [
+        f"https://api.ncbi.nlm.nih.gov/datasets/v2/genome/taxon/{'%2C'.join(subset).replace(' ', '%20')}/dataset_report?returned_content=COMPLETE&page_size=1000"
+        for subset in chunks
+    ]
+    query_lengths = [len(subset) for subset in chunks]
+
+    parrallel_tasks = [
+        fetch_data(url, session, headers, sem, 'reports', pbar, query_length)
+        for url, query_length in zip(urls, query_lengths)
+    ]
     async with sem:
         data_list = await asyncio.gather(*parrallel_tasks)
     await session.close()
-    return [item for sublist in data_list for item in sublist if sublist is not None]
+    
+    data_list = [item for sublist in data_list for item in sublist if sublist is not None]
+    data_list = [item for item in data_list 
+                    if item.get('organism', {}).get('infraspecific_names', {}).get('strain') in strain_names or 
+                    item.get('organism', {}).get('infraspecific_names', {}).get('isolate') in strain_names or
+                    item.get('assembly_info', {}).get('biosample', {}).get('strain') in strain_names]
+
+    return data_list
 
 
 async def request_ncbi_checkm(query_terms, api_key, pbar):
@@ -757,13 +753,29 @@ def fill_missing_report_fields(ncbi_accession_report):
 
 def convert_ncbi_accession_report_to_polars_df(ncbi_accession_report):
 
+    needed_structs = [
+        "accession", "organism", "assembly_info", "checkm_info",
+        "type_material", "average_nucleotide_identity",
+    ]
+
     ncbi_accession_report = fill_missing_report_fields(ncbi_accession_report)
 
     df = (
-        pl.DataFrame(ncbi_accession_report).lazy().with_columns(pl.col('accession').cast(pl.String).str.replace('\\.[0-9]+$', ''))
-            .unique(subset=["accession"], keep="first").unnest('organism')
-            .with_columns(pl.col('assembly_info').struct.field('atypical')).unnest('atypical')
+        pl.DataFrame(ncbi_accession_report).lazy(
+            ).select(
+                *needed_structs
+            )
             .with_columns(
+                pl.col('accession').cast(pl.String).str.replace('\\.[0-9]+$', '')
+            ).unique(
+                subset=["accession"], keep="first"
+            ).unnest(
+                'organism'
+            ).with_columns(
+                pl.col('assembly_info').struct.field('atypical')
+            ).unnest(
+                'atypical'
+            ).with_columns(
                 genome_notes = pl.col("assembly_info").struct.field("genome_notes"),
                 checkm_completeness = pl.col('checkm_info').struct.field('completeness'),
                 checkm_contamination = pl.col('checkm_info').struct.field('contamination'),
@@ -786,8 +798,12 @@ def convert_ncbi_accession_report_to_polars_df(ncbi_accession_report):
                 assembly_status = pl.col('assembly_info').struct.field('assembly_status').cast(pl.String)
             ).with_columns(
                 strain_name = pl.concat_list([pl.col('strain'), pl.col('isolate'), pl.col('biosample')]).list.drop_nulls().list.unique()
-            ).drop(['biosample', 'isolate', 'strain']).sort([pl.col('checkm_completeness'), pl.col('accession')], descending=[True, False])
-            .select("accession", 
+            ).drop(
+                ['biosample', 'isolate', 'strain']
+            ).sort(
+                [pl.col('checkm_completeness'), pl.col('accession')], 
+                descending=[True, False]
+            ).select("accession", 
                     "assembly_level",
                     "tax_id", 
                     "strain_name", 
@@ -807,7 +823,7 @@ def convert_ncbi_accession_report_to_polars_df(ncbi_accession_report):
                     "genome_notes", 
                     "type_display_text", 
                     "type_label")
-    ).collect()
+    )
    
     return df
 
@@ -854,7 +870,7 @@ def QC_screen_genome_accessions(types_with_genomes, api_key):
         ncbi_accession_report = asyncio.run(request_ncbi_checkm(genome_accessions, api_key, pbar))
         pbar.close()
 
-        ncbi_accession_df = convert_ncbi_accession_report_to_polars_df(ncbi_accession_report)
+        ncbi_accession_df = convert_ncbi_accession_report_to_polars_df(ncbi_accession_report).collect(engine="streaming")
 
         atypical_accs, good_accs = screen_accessions_for_atypical(ncbi_accession_df)
         bad_type_accs, good_accs = screen_accessions_for_bad_types(ncbi_accession_df)
@@ -898,25 +914,31 @@ def fetch_missing_genomes(missing_genome, api_key):
 
     updated_genomes = []
 
-    query_terms = list(set([
-        str(tax_id)
-        for type_strain in missing_genome
-        if type_strain.species_ncbi_tax_id is not None
-        for tax_id in (
-            type_strain.species_ncbi_tax_id
-            if isinstance(type_strain.species_ncbi_tax_id, list)
-            else [type_strain.species_ncbi_tax_id]
-        )
-    ]))
+    query_terms = []
+    strain_names = []
+    for type_strain in missing_genome:
+        if type_strain.species_ncbi_tax_id is not None:
+            if isinstance(type_strain.species_ncbi_tax_id, list):
+                query_terms.extend([str(tax_id) for tax_id in type_strain.species_ncbi_tax_id])
+            else:
+                query_terms.append(str(type_strain.species_ncbi_tax_id))
+        if type_strain.type_names is not None:
+            if isinstance(type_strain.type_names, list):
+                strain_names.extend([variant for name in type_strain.type_names for variant in (name.strip(), name.replace(" ", "-"), name.replace(" ", "_"))])
+            else:
+                strain_names.extend([type_strain.type_names.strip(), type_strain.type_names.replace(" ", "-"), type_strain.type_names.replace(" ", "_")])
+    strain_names = set(strain_names)
 
     pbar = tqdm.tqdm(total=len(query_terms), desc="Retrieving genome info", unit="type strain", ncols=100, colour="magenta")
-    data_list = asyncio.run(request_ncbi_genomes(query_terms, api_key, pbar))
+    data_list = asyncio.run(request_ncbi_genomes(query_terms, api_key, pbar, strain_names))
     pbar.close()
     logger.debug(f"Retrieved {len(data_list)} genome records from GenBank.")
     
     if len(data_list) == 0:
         logger.info("No genome records retrieved from GenBank. Continuing")
         return missing_genome
+
+    logger.info("Filtering genome records for atypical, suppressed, and bad type material.")
     
     ncbi_data_df = convert_ncbi_accession_report_to_polars_df(data_list).filter(
         (pl.col("is_atypical").not_().fill_null(True)) & 
@@ -925,7 +947,7 @@ def fetch_missing_genomes(missing_genome, api_key):
         (pl.col("type_label") != "EXCLUDE_TYPE_MATERIAL") &
         (pl.col("paired_assembly_status") != "suppressed") &
         (pl.col("assembly_status") != "suppressed")
-    ).group_by('tax_id').all()
+    ).group_by('tax_id').all().collect(engine="streaming")
 
 
     for type_strain in tqdm.tqdm(missing_genome, desc="Processing missing genome info", unit="type strain", ncols=100, colour="magenta"):
@@ -1042,10 +1064,10 @@ def retrieve_checkm_info(lpsn_types, api_key):
         
     logger.info("Processing checkm information.")
 
-    df = convert_ncbi_accession_report_to_polars_df(data_list).lazy()
+    df = convert_ncbi_accession_report_to_polars_df(data_list).collect(engine="streaming")
        
     for type_strain in tqdm.tqdm(has_genome, desc="Processing checkm info", unit="type strain", ncols=100, colour="magenta"):
-        filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).fill_null('').collect()
+        filtered = df.filter(pl.col('accession').str.replace('\\.[0-9]$', '') == type_strain.genome_acc.get("accession")).fill_null('')
         if len(filtered) > 0:
             best_hit = filtered.rows(named=True)[0]
             best_hit_strain = best_hit.get("strain_name", [None])[0]
@@ -1270,12 +1292,12 @@ def retrieve_sequences_workflow(lpsn_types, output_path, threads, dev_mode, inpu
         retrieve_genome_sequences(lpsn_types, output_path, threads, api_key)
         rehydrate_genome_sequences(output_path, threads, input_taxon)
         retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon, api_key)
-        lpsn_types = confirm_genbank_16S_hits_with_blast(lpsn_types, output_path, threads, mmseqs_16s_check)
+        lpsn_types = confirm_genbank_16S_hits_with_mmseqs(lpsn_types, output_path, threads, mmseqs_16s_check)
         tidy_16S_dir(output_path)
     elif sequence_download == "16S":
         logger.info("Skipping genome sequence retrieval as per user request.\n")
         retrieve_16S_sequences(lpsn_types, output_path, email, input_taxon, api_key)
-        lpsn_types = confirm_genbank_16S_hits_with_blast(lpsn_types, output_path, threads, mmseqs_16s_check)
+        lpsn_types = confirm_genbank_16S_hits_with_mmseqs(lpsn_types, output_path, threads, mmseqs_16s_check)
         tidy_16S_dir(output_path)
     elif sequence_download == "genomes":
         logger.info("Skipping 16S sequence retrieval as per user request.\n")

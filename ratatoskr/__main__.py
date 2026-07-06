@@ -3,6 +3,7 @@
 
 ######### Import libraries ###########
 
+import os
 from pathlib import Path
 
 import rich_click as click
@@ -55,7 +56,6 @@ def main_cli():
 @click.option(
         "-o",
         "--output_path",
-        "--output",
         help="Specify the desired path for creation of the output folder",
         required=True,
         type=click.Path(exists=False, dir_okay=True, readable=True, path_type=Path)
@@ -107,7 +107,7 @@ def main_cli():
         "-m",
         "--mmseqs_16S_check",
         help="Specify whether to check 16S rRNA sequences with mmseqs against SILVA for either all sequences or only those from GenBank ('all' can be time-consuming step for higher taxonomic levels)",
-        type=click.Choice(['all', 'genbank'], case_sensitive=False),
+        type=click.Choice(['all', 'genbank', 'none'], case_sensitive=False),
         callback=lambda ctx, param, value: value.lower(),
         show_default = True,
         default = 'all',
@@ -141,6 +141,9 @@ def run(ctx, input, output_path, threads, force, level, dev_mode, sequence_downl
     """
     Run the ratatoskr pipeline
     """
+
+    os.environ["POLARS_MAX_THREADS"] = str(threads)
+    import polars as pl
 
     set_up_logger(output_path, force, debug=dev_mode)
     if sequence_download == '16s' or sequence_download == 'all':

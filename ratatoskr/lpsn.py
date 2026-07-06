@@ -8,7 +8,6 @@ import tqdm
 import os
 import asyncio
 
-os.environ["POLARS_MAX_THREADS"] = "1"
 import polars as pl
 
 from ratatoskr.utils import suppress_stdout

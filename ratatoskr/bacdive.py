@@ -118,9 +118,6 @@ def get_16S_sequence_info(record):
 
 def get_genome_sequence_info(record):
 
-    # print(record)
-    # if "Zoogloea ramigera" in record.get("General").get("description", ""):
-    #     print(record)
     genome_info = record.get("Sequence information", {}).get("Genome sequences")
     
     if genome_info is not None:

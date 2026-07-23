@@ -26,8 +26,10 @@ def get_genomic_data(type_strain, type_name):
             values.append(
                     f"{type_strain.rRNA_acc if type_strain.rRNA_acc is not None else ''}\t"
                     f"{rRNA_info.get('source','') if rRNA_info.get('source') is not None else ''}\t"
-                    f"{rRNA_info.get('98.7%_match','') if rRNA_info.get('98.7%_match') is not None else ''}\t"
-                    f"{rRNA_info.get('95%_match','') if rRNA_info.get('95%_match') is not None else ''}\t"
+                    f"{rRNA_info.get('97.2%_match','') if rRNA_info.get('97.2%_match') is not None else ''}\t"
+                    f"{rRNA_info.get('90.1%_match','') if rRNA_info.get('90.1%_match') is not None else ''}\t"
+                    f"{rRNA_info.get('80.1%_match','') if rRNA_info.get('80.1%_match') is not None else ''}\t"
+                    f"{rRNA_info.get('72.9%_match','') if rRNA_info.get('72.9%_match') is not None else ''}\t"
                     f"{rRNA_info.get('note','') if rRNA_info.get('note') is not None else ''}"
                 )
         elif a == "genome_acc":
@@ -36,7 +38,7 @@ def get_genomic_data(type_strain, type_name):
                     f"{bg.get('accession','') if bg.get('accession') is not None else ''}\t"
                     f"{bg.get('assembly level','') if bg.get('assembly level') is not None else ''}\t"
                     f"{bg.get('checkm_completeness','') if bg.get('checkm_completeness') is not None else ''}\t"
-                    f"{bg.get('checkm_contamination','') if bg.get('checkm_contamination') is not None else ''}\t"
+                    f"{bg.get('checkm_contamination','') if bg.get('checkm_contamination') is not None else (0 if bg.get('checkm_completeness') is not None and (bg.get('checkm_contamination') is None) else '')}\t"
                     f"{bg.get('ncbis_species_match_assembly','') if bg.get('ncbis_species_match_assembly') is not None else ''}\t"
                     f"{bg.get('ncbis_species_match_name','') if bg.get('ncbis_species_match_name') is not None else ''}\t"
                     f"{bg.get('ncbis_species_match_ani','') if bg.get('ncbis_species_match_ani') is not None else ''}\t"
@@ -273,8 +275,10 @@ def output_sequence_metadata(lpsn_types, output_path):
     genomic_tsv = ["\t".join(["Name", 
                               "rRNA_accession", 
                               "rRNA_source",
-                              "rRNA_98.7%_match_status",
-                              "rRNA_95%_match_status",
+                              "rRNA_97.2%_match_status",
+                              "rRNA_90.1%_match_status",
+                              "rRNA_80.1%_match_status",
+                              "rRNA_72.9%_match_status",
                               "rRNA_note",
                               "Genome_accession",
                               "Assembly_level", 
